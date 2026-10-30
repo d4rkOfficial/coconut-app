@@ -1,0 +1,193 @@
+:root {
+  --red: #d9533f;
+  --yellow: #d9a92f;
+  --green: #4f9a63;
+  --ink: #0d0d0c;
+  --muted: #6d6d68;
+  --faint: #94948e;
+  --line: #dcdcd6;
+}
+
+* {
+  box-sizing: border-box;
+  margin: 0;
+}
+
+body {
+  padding: 0;
+  background: #ffffff;
+  font-family: "Microsoft YaHei UI", "Segoe UI", system-ui, sans-serif;
+  color: var(--ink);
+  overflow: hidden;
+}
+
+.mono {
+  font-family: "Cascadia Mono", Consolas, monospace;
+}
+
+/*
+ * WiX 控件几何（MSI 单位，1 unit = 1/72 inch，96 DPI 下 ×4/3 = px）：
+ *   横幅控件   370 × 44 units  = 493 × 58 px
+ *   侧图控件   370 × 234 units = 493 × 312 px
+ * 页面标题/描述文字画在横幅左侧（x 15..215 units）与侧图 x≥135 units 处，
+ * 所以品牌内容只能放在横幅右侧、侧图左侧 176px 的竖栏里。
+ */
+
+.banner {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  width: 493px;
+  height: 58px;
+  padding: 0 14px;
+  background: linear-gradient(180deg, #ffffff 0%, #f3f3f0 100%);
+}
+
+.banner img {
+  width: 26px;
+  height: 26px;
+  border-radius: 8px;
+  box-shadow: 0 3px 8px rgba(0, 0, 0, 0.16);
+}
+
+.banner .title {
+  font-size: 13px;
+  font-weight: 800;
+  letter-spacing: -0.01em;
+}
+
+.banner .sub {
+  margin-top: 1px;
+  color: var(--faint);
+  font-size: 7px;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+}
+
+.banner .stripe {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 2px;
+  background: linear-gradient(90deg, #d9533f, #d9a92f, #4f9a63);
+}
+
+.panel {
+  position: relative;
+  width: 493px;
+  height: 312px;
+  overflow: hidden;
+  background: #f4f4f1;
+  background-image: linear-gradient(90deg, #ecebe6 0px, #f6f6f3 176px, #fbfbf9 100%);
+}
+
+.panel .rail {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  width: 176px;
+  background: radial-gradient(220px 260px at 34% 26%, #ffffff 0%, #f0efe9 62%, #e9e8e2 100%);
+  border-right: 1px solid #e4e3dc;
+}
+
+.panel .grid {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  width: 176px;
+  opacity: 0.45;
+  background-image:
+    linear-gradient(to right, rgba(0, 0, 0, 0.05) 1px, transparent 1px),
+    linear-gradient(to bottom, rgba(0, 0, 0, 0.05) 1px, transparent 1px);
+  background-size: 32px 32px;
+  -webkit-mask-image: linear-gradient(to bottom, black, transparent 82%);
+  mask-image: linear-gradient(to bottom, black, transparent 82%);
+}
+
+.panel .coco {
+  position: absolute;
+  top: 24px;
+  left: 30px;
+  width: 108px;
+  height: 108px;
+  filter: drop-shadow(0 12px 18px rgba(0, 0, 0, 0.18));
+}
+
+.panel .name {
+  position: absolute;
+  top: 146px;
+  left: 28px;
+  right: 12px;
+  font-size: 18px;
+  font-weight: 800;
+  letter-spacing: -0.04em;
+  white-space: nowrap;
+}
+
+.panel .byline {
+  position: absolute;
+  top: 174px;
+  left: 28px;
+  right: 12px;
+  color: var(--red);
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  white-space: nowrap;
+}
+
+.panel .tags {
+  position: absolute;
+  top: 194px;
+  left: 28px;
+  right: 12px;
+  color: var(--muted);
+  font-size: 8.5px;
+  line-height: 1.6;
+  letter-spacing: 0.04em;
+}
+
+.panel .foot {
+  position: absolute;
+  bottom: 14px;
+  left: 28px;
+  right: 16px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding-top: 8px;
+  border-top: 1px solid var(--line);
+  color: var(--faint);
+  font-size: 7.5px;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+}
+
+.panel .dots {
+  display: flex;
+  gap: 4px;
+}
+
+.panel .dots i {
+  display: block;
+  width: 4px;
+  height: 4px;
+  border-radius: 50%;
+}
+
+.panel .dots .r {
+  background: #d9533f;
+}
+
+.panel .dots .y {
+  background: #d9a92f;
+}
+
+.panel .dots .g {
+  background: #4f9a63;
+}

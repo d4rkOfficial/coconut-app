@@ -1,0 +1,20 @@
+{
+  "name": "coconut-app",
+  "private": true,
+  "version": "0.1.0",
+  "description": "椰果工具箱启动器：本地安装、更新、WS 接管与免费模型配置同步",
+  "type": "module",
+  "scripts": {
+    "tauri": "node node_modules/@tauri-apps/cli/tauri.js",
+    "dev": "node node_modules/@tauri-apps/cli/tauri.js dev",
+    "build": "node node_modules/@tauri-apps/cli/tauri.js build",
+    "prebuild": "npm run builtin",
+    "tauri:build": "npm run builtin && node node_modules/@tauri-apps/cli/tauri.js build --bundles msi",
+    "icon": "node node_modules/@tauri-apps/cli/tauri.js icon assets/icon.svg",
+    "builtin": "node builtin/build.mjs"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2.9.0",
+    "esbuild": "^0.25.0"
+  }
+}

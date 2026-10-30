@@ -1,0 +1,16 @@
+node_modules/
+.tmp-run/
+.tmp-install/
+.tmp/
+.edge-tmp/
+src-tauri/target/
+src-tauri/gen/
+dist/
+*.log
+.DS_Store
+tmp/
+builtin/out/
+
+# translation plugin (work in progress, kept in tmp)
+builtin/translate/
+builtin/translate.*/

@@ -1,0 +1,52 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "椰果工具箱",
+  "version": "0.1.0",
+  "identifier": "com.coconut.launcher",
+  "build": {
+    "frontendDist": "../ui"
+  },
+  "app": {
+    "withGlobalTauri": true,
+    "windows": [
+      {
+        "label": "main",
+        "title": "椰果工具箱 · 启动器",
+        "width": 1000,
+        "height": 660,
+        "minWidth": 860,
+        "minHeight": 560,
+        "resizable": true,
+        "center": true,
+        "decorations": false,
+        "backgroundColor": "#f3efe6"
+      }
+    ],
+    "security": {
+      "csp": null
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": ["msi"],
+    "publisher": "椰果工具箱",
+    "copyright": "© 2026 椰果工具箱 · 鸣潮社区公益工具",
+    "shortDescription": "椰果工具箱启动器：排轴 / 拉表 / 配装 / 计算",
+    "longDescription": "内置工具箱静态产物与 opencode 免费模型代理，一键启动 Wuthering Waves 椰果工具箱。",
+    "homepage": "https://github.com/d4rkOfficial/wuwa-afyg-tool",
+    "windows": {
+      "wix": {
+        "language": "zh-CN",
+        "bannerPath": "../assets/msi/banner.bmp",
+        "dialogImagePath": "../assets/msi/dialog.bmp"
+      }
+    },
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ]
+  }
+}

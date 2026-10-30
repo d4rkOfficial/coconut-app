@@ -1,0 +1,263 @@
+<!doctype html>
+<html lang="zh-Hans">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="color-scheme" content="light dark" />
+  <title>椰果工具箱 · 启动器</title>
+  <link rel="stylesheet" href="./styles.css" />
+  <script src="./i18n.js"></script>
+</head>
+<body>
+  <div class="app">
+    <div class="titlebar" data-tauri-drag-region>
+      <span class="titlebar-grip" data-tauri-drag-region></span>
+      <div class="traffic">
+        <button
+          class="theme-toggle"
+          id="theme-toggle"
+          type="button"
+          data-i18n-title="theme.toDark"
+          aria-pressed="false"
+          title="切换到夜间模式"
+        >
+          <svg class="icon-moon" viewBox="0 0 20 20" aria-hidden="true">
+            <path
+              d="M16.3 12.6A6.9 6.9 0 0 1 7.4 3.7a6.9 6.9 0 1 0 8.9 8.9Z"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="1.5"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+            />
+          </svg>
+          <svg class="icon-sun" viewBox="0 0 20 20" aria-hidden="true">
+            <circle cx="10" cy="10" r="3.6" fill="none" stroke="currentColor" stroke-width="1.5" />
+            <path
+              d="M10 1.8v2.1M10 16.1v2.1M1.8 10h2.1M16.1 10h2.1M4.2 4.2l1.5 1.5M14.3 14.3l1.5 1.5M15.8 4.2l-1.5 1.5M5.7 14.3l-1.5 1.5"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="1.5"
+              stroke-linecap="round"
+            />
+          </svg>
+        </button>
+        <button
+          class="traffic-dot green"
+          id="win-min"
+          type="button"
+          data-i18n-title="win.min"
+          title="最小化"
+          aria-label="最小化"
+        >
+          <svg viewBox="0 0 16 16" aria-hidden="true">
+            <path d="M3 8.5h10" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" />
+          </svg>
+        </button>
+        <button
+          class="traffic-dot yellow"
+          id="win-max"
+          type="button"
+          data-i18n-title="win.max"
+          title="缩放窗口"
+          aria-label="缩放窗口"
+        >
+          <svg viewBox="0 0 16 16" aria-hidden="true">
+            <rect
+              x="3.4"
+              y="3.4"
+              width="9.2"
+              height="9.2"
+              rx="1.3"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2.2"
+              stroke-linejoin="round"
+            />
+          </svg>
+        </button>
+        <button
+          class="traffic-dot red"
+          id="win-close"
+          type="button"
+          data-i18n-title="win.close"
+          title="关闭"
+          aria-label="关闭"
+        >
+          <svg viewBox="0 0 16 16" aria-hidden="true">
+            <path
+              d="M4.2 4.2l7.6 7.6M11.8 4.2l-7.6 7.6"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2.2"
+              stroke-linecap="round"
+            />
+          </svg>
+        </button>
+      </div>
+    </div>
+
+    <header class="header">
+      <div class="eyebrow">
+        <span class="pulse"></span>
+        <span class="eyebrow-en">Wuthering Waves Coconut Toolbox</span>
+        <span class="eyebrow-sep">/</span>
+        <span class="eyebrow-cn" data-i18n="eyebrow.vol">Vol. 1 — 排轴 / 拉表 / 配装 / 计算</span>
+      </div>
+    </header>
+
+    <main class="hero">
+      <section class="hero-copy">
+        <h1 data-i18n="hero.title">椰果工具箱</h1>
+        <p class="byline" data-i18n="hero.byline">鸣潮社区公益工具</p>
+        <p class="sub">
+          <span data-i18n="sub.local">本地运行</span>
+          <span class="dot-sep red">·</span>
+          <span data-i18n="sub.offline">无需联网</span>
+          <span class="dot-sep yellow">·</span>
+          <span data-i18n="sub.plugins">支持插件拓展</span>
+        </p>
+
+        <div class="game-data">
+          <span class="game-data-label" data-i18n="game.label">游戏数据版本</span>
+          <strong id="game-version">—</strong>
+        </div>
+
+        <div class="actions">
+          <button class="primary" id="start">
+            <span id="start-label" data-i18n="start">启动工具箱</span>
+            <svg viewBox="0 0 20 20" aria-hidden="true">
+              <path d="M4 10h11M11 5l5 5-5 5" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" />
+            </svg>
+          </button>
+        </div>
+        <div class="checks">
+          <button class="secondary check-chip" id="check-toolbox">
+            <svg class="chip-icon" viewBox="0 0 16 16" aria-hidden="true">
+              <path
+                d="M13 8a5 5 0 1 1-1.6-3.7M13 2.6V5.2h-2.6"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="1.4"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+              />
+            </svg>
+            <span id="check-toolbox-label" data-i18n="check.toolbox">检查工具箱版本更新</span>
+          </button>
+          <button class="secondary check-chip" id="check-game">
+            <svg class="chip-icon" viewBox="0 0 16 16" aria-hidden="true">
+              <path
+                d="M3.2 4.2c0-1 2.1-1.7 4.8-1.7s4.8.7 4.8 1.7S10.7 6 8 6 3.2 5.2 3.2 4.2ZM3.2 4.2v7.6c0 1 2.1 1.7 4.8 1.7s4.8-.7 4.8-1.7V4.2M3.2 8c0 1 2.1 1.7 4.8 1.7s4.8-.7 4.8-1.7"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="1.3"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+              />
+            </svg>
+            <span id="check-game-label" data-i18n="check.game">检查游戏数据版本更新</span>
+          </button>
+        </div>
+
+        <div class="status-row" aria-live="polite">
+          <span class="status-dot" id="dot"></span>
+          <span id="status" data-i18n="status.connecting">正在连接本地服务</span>
+        </div>
+        <div class="progress-text" id="progress-text" aria-live="polite" data-i18n="progress.idle">等待操作</div>
+        <div class="progress" id="progress-track"><span id="bar"></span></div>
+      </section>
+
+      <aside class="hero-visual">
+        <div class="coconut-stage">
+          <img
+            class="coconut-icon"
+            id="coconut"
+            src="./coconut.svg"
+            data-i18n-title="coconut.tip"
+            alt="椰果"
+            title="点击切换语言"
+            draggable="false"
+          />
+        </div>
+      </aside>
+    </main>
+
+    <footer class="footer">
+      <div class="stat">
+        <span>COMMIT</span>
+        <strong id="commit">—</strong>
+      </div>
+      <div class="stat">
+        <span>BUILD</span>
+        <strong id="build">—</strong>
+      </div>
+      <div class="stat">
+        <span>STATE</span>
+        <strong id="phase">OFFLINE</strong>
+      </div>
+      <div class="footer-actions">
+        <button class="plugins-link" id="plugins" type="button" data-i18n-title="plugins.tip" title="插件">
+          <span class="plugins-dot" id="plugins-dot" aria-hidden="true"></span>
+          <span id="plugins-label" data-i18n="plugins.button">插件</span>
+        </button>
+        <button
+          class="uninstall-link"
+          id="uninstall"
+          type="button"
+          data-i18n-title="uninstall.tip"
+          data-i18n="uninstall.button"
+          title="卸载椰果工具箱并删除所有本地数据"
+        >
+          卸载并删除本地数据
+        </button>
+      </div>
+    </footer>
+
+    <div class="plugins-dialog" id="plugins-dialog" hidden>
+      <div class="plugins-panel" role="dialog" aria-modal="true" aria-labelledby="plugins-title">
+        <header class="plugins-masthead">
+          <div class="plugins-heading">
+            <span class="plugins-kicker">Coconut Toolbox · Extensions</span>
+            <div class="plugins-titleline">
+              <h2 id="plugins-title" data-i18n="plugins.title">插件</h2>
+              <span class="plugins-title-en">Plugins</span>
+            </div>
+            <p class="plugins-hint" id="plugins-hint" data-i18n="plugins.hint">拖一个 .js 进插件目录即可安装</p>
+          </div>
+          <div class="plugins-tools">
+            <button class="secondary key-button" id="plugins-open" type="button" data-i18n="plugins.open">
+              打开插件目录
+            </button>
+            <button class="secondary key-button" id="plugins-rescan" type="button" data-i18n="plugins.rescan">
+              重新扫描
+            </button>
+          </div>
+        </header>
+        <ul class="plugins-list" id="plugins-list"></ul>
+        <div class="plugins-foot">
+          <button class="primary key-button" id="plugins-close" type="button" data-i18n="plugins.close">关闭</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="uninstall-dialog" id="uninstall-dialog" hidden>
+      <div class="uninstall-panel" role="dialog" aria-modal="true" aria-labelledby="uninstall-title">
+        <div class="uninstall-head">
+          <h2 id="uninstall-title" data-i18n="uninstall.title">卸载椰果工具箱</h2>
+          <span class="uninstall-hint" data-i18n="uninstall.hint">删除本地数据不可恢复</span>
+        </div>
+        <ol class="uninstall-steps" id="uninstall-steps"></ol>
+        <div class="uninstall-track"><span id="uninstall-bar"></span></div>
+        <div class="uninstall-foot" id="uninstall-foot" data-i18n="uninstall.ready">准备开始…</div>
+        <div class="uninstall-actions" id="uninstall-actions" hidden>
+          <button class="primary key-button" id="uninstall-exit" type="button" data-i18n="uninstall.exit">
+            退出启动器
+          </button>
+        </div>
+      </div>
+    </div>
+  </div>
+  <script src="./main.js"></script>
+</body>
+</html>

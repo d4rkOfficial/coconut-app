@@ -227,8 +227,13 @@ function disableActions(disabled) {
   $('plugins').disabled = !connected;
 }
 
-// ── 插件弹窗 ──
+// ── 插件管理 ──
+// 顶部标题栏（右上角关闭）+ 搜索 / 状态筛选 / 批量启停；列表是紧凑行，
+// 每行右侧是启用开关 + 重载。停用/启停都是乐观更新：先改本地状态立刻重绘，再落 Rust。
 let pluginEntries = [];
+let pluginFilter = 'all';
+let pluginQuery = '';
+let pluginBusy = false;
 
 function setPluginBadge(list) {
   const button = $('plugins');
@@ -245,58 +250,175 @@ function setPluginBadge(list) {
   });
 }
 
+function pluginMatchesQuery(plugin) {
+  if (!pluginQuery) return true;
+  const haystack = [
+    plugin.name,
+    plugin.id,
+    plugin.description,
+    plugin.path,
+    ...(plugin.permissions || []),
+  ]
+    .map((value) => String(value || '').toLowerCase())
+    .join('\n');
+  return haystack.includes(pluginQuery);
+}
+
+function pluginPassesFilter(plugin) {
+  if (pluginFilter === 'on') return plugin.enabled;
+  if (pluginFilter === 'off') return !plugin.enabled;
+  if (pluginFilter === 'error') return plugin.errors > 0;
+  return true;
+}
+
+/** 标题栏计数、分段按钮上的数字、批量按钮的可用性。 */
+function updatePluginChrome(list) {
+  const total = list.length;
+  const enabled = list.filter((plugin) => plugin.enabled).length;
+  const errored = list.filter((plugin) => plugin.errors > 0).length;
+
+  const count = $('plugins-count');
+  if (count) {
+    count.textContent = total ? t('plugins.countLine', { total, enabled }) : '—';
+    count.dataset.error = errored > 0 ? 'true' : 'false';
+    count.title = t('plugins.countTip', { total, enabled, errored });
+  }
+
+  const counts = { all: total, on: enabled, off: total - enabled, error: errored };
+  const labels = {
+    all: 'plugins.filter.all',
+    on: 'plugins.filter.on',
+    off: 'plugins.filter.off',
+    error: 'plugins.filter.error',
+  };
+  const filters = $('plugins-filters');
+  if (filters) {
+    for (const button of filters.querySelectorAll('button[data-filter]')) {
+      const key = button.dataset.filter;
+      // 文案不挂 data-i18n：静态替换会连数量一起抹掉，这里统一重建「标签 + 数量」
+      button.innerHTML = `<span>${escapeHtml(t(labels[key] || labels.all))}</span><b>${
+        counts[key] ?? 0
+      }</b>`;
+      button.setAttribute('aria-pressed', key === pluginFilter ? 'true' : 'false');
+    }
+  }
+
+  const enableAll = $('plugins-enable-all');
+  const disableAll = $('plugins-disable-all');
+  if (enableAll) enableAll.disabled = pluginBusy || total === 0 || enabled === total;
+  if (disableAll) disableAll.disabled = pluginBusy || enabled === 0;
+}
+
 function pluginPermChips(permissions) {
-  return permissions
+  return (permissions || [])
     .map(
       (perm) =>
-        `<span class="plugin-perm${perm === 'debug' ? ' debug' : ''}">${perm}</span>`,
+        `<span class="plugin-perm${perm === 'debug' ? ' debug' : ''}">${escapeHtml(perm)}</span>`,
     )
     .join('');
 }
 
-function renderPlugins(list) {
-  pluginEntries = list;
+function pluginRowHtml(plugin) {
+  const badges = [
+    plugin.builtin
+      ? `<span class="plugin-badge builtin">${escapeHtml(t('plugins.builtin'))}</span>`
+      : '',
+    plugin.mount === 'overlay'
+      ? `<span class="plugin-badge">${escapeHtml(t('plugins.mountOverlay'))}</span>`
+      : '',
+    plugin.errors > 0
+      ? `<span class="plugin-badge error">${escapeHtml(
+          t('plugins.errorBadge', { count: plugin.errors }),
+        )}</span>`
+      : '',
+  ]
+    .filter(Boolean)
+    .join('');
+  const description = plugin.description
+    ? `<div class="plugin-desc" title="${escapeHtml(plugin.description)}">${escapeHtml(
+        plugin.description,
+      )}</div>`
+    : '';
+  const error = plugin.errors > 0
+    ? `<div class="plugin-error" title="${escapeHtml(plugin.last_error || '')}">${escapeHtml(
+        t('plugins.errorLine', { count: plugin.errors, message: plugin.last_error || '' }),
+      )}</div>`
+    : '';
+  const label = t(plugin.enabled ? 'plugins.disable' : 'plugins.enable');
+  return `<li class="plugin-row" data-enabled="${plugin.enabled}" data-error="${
+    plugin.errors > 0
+  }" data-id="${escapeHtml(plugin.id)}">
+      <span class="plugin-dot" aria-hidden="true"></span>
+      <div class="plugin-main">
+        <div class="plugin-top">
+          <span class="plugin-name" title="${escapeHtml(plugin.path || plugin.id)}">${escapeHtml(
+            plugin.name || plugin.id,
+          )}</span>
+          <span class="plugin-version">v${escapeHtml(plugin.version || '0.0.0')}</span>
+          ${badges}
+        </div>
+        ${description}
+        <div class="plugin-meta">
+          ${pluginPermChips(plugin.permissions)}
+          <span class="plugin-id">${escapeHtml(plugin.id)}</span>
+        </div>
+        ${error}
+      </div>
+      <div class="plugin-side">
+        <label class="plugin-switch" title="${escapeHtml(label)}">
+          <input
+            type="checkbox"
+            data-act="toggle"
+            ${plugin.enabled ? 'checked' : ''}
+            aria-label="${escapeHtml(label)}"
+          />
+          <span class="plugin-slider" aria-hidden="true"></span>
+        </label>
+        <button class="plugin-action" type="button" data-act="reload">${escapeHtml(
+          t('plugins.reload'),
+        )}</button>
+      </div>
+    </li>`;
+}
+
+function renderPlugins() {
+  const list = pluginEntries;
   setPluginBadge(list);
+  updatePluginChrome(list);
   const root = $('plugins-list');
-  if (!root) return;
+  const blank = $('plugins-blank');
+  if (!root || !blank) return;
   root.innerHTML = '';
+
   if (!list.length) {
-    const empty = document.createElement('li');
-    empty.className = 'plugin-desc';
-    empty.style.padding = '22px 0';
-    empty.textContent = t('plugins.empty');
-    root.appendChild(empty);
+    blank.textContent = t('plugins.empty');
+    blank.hidden = false;
     return;
   }
-  for (const plugin of list) {
-    const card = document.createElement('li');
-    card.className = 'plugin-card';
-    card.dataset.enabled = plugin.enabled ? 'true' : 'false';
-    card.dataset.error = plugin.errors > 0 ? 'true' : 'false';
-    const index = String(list.indexOf(plugin) + 1).padStart(2, '0');
-    card.innerHTML = `
-      <div class="plugin-index">${index}</div>
-      <div class="plugin-body">
-        <div class="plugin-top">
-          <span class="plugin-name">${escapeHtml(plugin.name || plugin.id)}</span>
-          <span class="plugin-version">v${escapeHtml(plugin.version || '0.0.0')}</span>
-          ${plugin.builtin ? `<span class="plugin-badge builtin">${escapeHtml(t('plugins.builtin'))}</span>` : ''}
-          <span class="plugin-badge">${escapeHtml(plugin.enabled ? t('plugins.running') : t('plugins.stopped'))}</span>
-        </div>
-        ${plugin.description ? `<div class="plugin-desc">${escapeHtml(plugin.description)}</div>` : ''}
-        <div class="plugin-perms">${pluginPermChips(plugin.permissions || [])}</div>
-        ${plugin.errors > 0 ? `<div class="plugin-error">${escapeHtml(t('plugins.errorLine', { count: plugin.errors, message: plugin.last_error || '' }))}</div>` : ''}
-        <div class="plugin-actions">
-          <button data-act="toggle">${escapeHtml(plugin.enabled ? t('plugins.disable') : t('plugins.enable'))}</button>
-          <button data-act="reload">${escapeHtml(t('plugins.reload'))}</button>
-        </div>
-      </div>`;
-    for (const button of card.querySelectorAll('button[data-act]')) {
-      button.addEventListener('click', () =>
-        onPluginAction(plugin, button.dataset.act, button),
-      );
-    }
-    root.appendChild(card);
+
+  const visible = list.filter(
+    (plugin) => pluginPassesFilter(plugin) && pluginMatchesQuery(plugin),
+  );
+  if (!visible.length) {
+    blank.textContent = pluginQuery
+      ? t('plugins.emptyQuery', { query: pluginQuery })
+      : t('plugins.emptyFiltered');
+    blank.hidden = false;
+    return;
+  }
+
+  blank.hidden = true;
+  root.innerHTML = visible.map(pluginRowHtml).join('');
+
+  for (const row of root.querySelectorAll('.plugin-row')) {
+    const plugin = list.find((item) => item.id === row.dataset.id);
+    if (!plugin) continue;
+    row
+      .querySelector('input[data-act="toggle"]')
+      ?.addEventListener('change', () => onPluginAction(plugin, 'toggle'));
+    row
+      .querySelector('button[data-act="reload"]')
+      ?.addEventListener('click', () => onPluginAction(plugin, 'reload'));
   }
 }
 
@@ -311,22 +433,35 @@ function escapeHtml(text) {
 async function loadPlugins() {
   try {
     const list = await invoke('plugins_list');
-    renderPlugins(Array.isArray(list) ? list : []);
+    pluginEntries = Array.isArray(list) ? list : [];
+    renderPlugins();
   } catch (error) {
     setStatus(t('plugins.listFailed', { detail: error?.message || error }), 'error', true);
   }
 }
 
-async function onPluginAction(plugin, action, button) {
-  if (button) button.disabled = true;
+async function onPluginAction(plugin, action) {
+  if (pluginBusy) return;
+  pluginBusy = true;
+  updatePluginChrome(pluginEntries);
   try {
     if (action === 'toggle') {
-      await invoke('plugins_set_enabled', { id: plugin.id, enabled: !plugin.enabled });
-      setStatus(
-        t(plugin.enabled ? 'plugins.disableToast' : 'plugins.enableToast', { name: plugin.name }),
-        'ready',
-        true,
-      );
+      const next = !plugin.enabled;
+      // 乐观更新：先本地切、立刻重绘，失败再回滚
+      plugin.enabled = next;
+      renderPlugins();
+      try {
+        await invoke('plugins_set_enabled', { id: plugin.id, enabled: next });
+        setStatus(
+          t(next ? 'plugins.enableToast' : 'plugins.disableToast', { name: plugin.name }),
+          'ready',
+          true,
+        );
+      } catch (error) {
+        plugin.enabled = !next;
+        renderPlugins();
+        throw error;
+      }
     } else if (action === 'reload') {
       await invoke('plugins_reload', { id: plugin.id });
       setStatus(t('plugins.reloadToast', { name: plugin.name }), 'ready', true);
@@ -334,13 +469,91 @@ async function onPluginAction(plugin, action, button) {
   } catch (error) {
     setStatus(t('plugins.actionFailed', { detail: error?.message || error }), 'error', true);
   }
+  pluginBusy = false;
   await loadPlugins();
+}
+
+/** 批量启用 / 停用：只处理需要变的那部分，逐个落 Rust（失败计数）。 */
+async function bulkPluginAction(enabled) {
+  if (pluginBusy) return;
+  const targets = pluginEntries.filter((plugin) => plugin.enabled !== enabled);
+  if (!targets.length) return;
+  pluginBusy = true;
+  updatePluginChrome(pluginEntries);
+  let failed = 0;
+  for (const plugin of targets) {
+    try {
+      await invoke('plugins_set_enabled', { id: plugin.id, enabled });
+      plugin.enabled = enabled;
+    } catch {
+      failed += 1;
+    }
+  }
+  pluginBusy = false;
+  if (failed) {
+    setStatus(t('plugins.bulkFailed', { count: failed }), 'error', true);
+  } else {
+    setStatus(
+      t(enabled ? 'plugins.enableAllToast' : 'plugins.disableAllToast', {
+        count: targets.length,
+      }),
+      'ready',
+      true,
+    );
+  }
+  await loadPlugins();
+}
+
+function closePlugins() {
+  $('plugins-dialog').hidden = true;
 }
 
 async function openPlugins() {
   if (!connected) return;
   $('plugins-dialog').hidden = false;
   await loadPlugins();
+  const search = $('plugins-search');
+  if (search) {
+    search.value = pluginQuery;
+    search.focus();
+  }
+}
+
+function initPlugins() {
+  $('plugins').addEventListener('click', openPlugins);
+  $('plugins-close').addEventListener('click', closePlugins);
+  $('plugins-dialog').addEventListener('click', (event) => {
+    if (event.target === $('plugins-dialog')) closePlugins();
+  });
+  document.addEventListener('keydown', (event) => {
+    if (event.key === 'Escape' && !$('plugins-dialog').hidden) closePlugins();
+  });
+
+  $('plugins-open').addEventListener('click', async () => {
+    try {
+      const dir = await invoke('plugins_open_dir');
+      setStatus(t('plugins.dirToast', { dir }), 'ready', true);
+    } catch (error) {
+      setStatus(t('plugins.openFailed', { detail: error?.message || error }), 'error', true);
+    }
+  });
+  $('plugins-rescan').addEventListener('click', loadPlugins);
+
+  $('plugins-search').addEventListener('input', (event) => {
+    pluginQuery = String(event.target.value || '').trim().toLowerCase();
+    renderPlugins();
+  });
+
+  $('plugins-filters').addEventListener('click', (event) => {
+    const button = event.target.closest('button[data-filter]');
+    if (!button) return;
+    pluginFilter = button.dataset.filter || 'all';
+    updatePluginChrome(pluginEntries);
+    renderPlugins();
+  });
+
+  $('plugins-enable-all').addEventListener('click', () => bulkPluginAction(true));
+  $('plugins-disable-all').addEventListener('click', () => bulkPluginAction(false));
 }
 
 function applyState(next) {
@@ -853,22 +1066,7 @@ async function init() {
   // 启动页语言跟随系统；顺手告诉 Rust，进度文案用同一种语言。
   invoke('set_language', { lang: window.COCONUT_LANG.locale }).catch(() => {});
   $('uninstall').addEventListener('click', runUninstall);
-  $('plugins').addEventListener('click', openPlugins);
-  $('plugins-close').addEventListener('click', () => {
-    $('plugins-dialog').hidden = true;
-  });
-  $('plugins-dialog').addEventListener('click', (event) => {
-    if (event.target === $('plugins-dialog')) $('plugins-dialog').hidden = true;
-  });
-  $('plugins-open').addEventListener('click', async () => {
-    try {
-      const dir = await invoke('plugins_open_dir');
-      setStatus(t('plugins.dirToast', { dir }), 'ready', true);
-    } catch (error) {
-      setStatus(t('plugins.openFailed', { detail: error?.message || error }), 'error', true);
-    }
-  });
-  $('plugins-rescan').addEventListener('click', loadPlugins);
+  initPlugins();
   $('uninstall-exit').addEventListener('click', async () => {
     const button = $('uninstall-exit');
     button.disabled = true;

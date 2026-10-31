@@ -8,6 +8,16 @@ Tauri 桌面启动器：本地打开椰果工具箱，并自动接管 AI 助手�
 - Tauri 的 Rust 进程直接启动静态文件服务、API 反向代理、免费模型代理和 WebSocket 接管服务；
 - 只有构建工具箱静态产物时才需要 Node/pnpm，打包后的启动器不需要它们。
 
+## 相关仓库
+
+- [`wuwa-afyg-tool`](https://github.com/d4rkOfficial/wuwa-afyg-tool) — 工具箱本体（SvelteKit）
+- [`wuwa-afyg-share`](https://github.com/d4rkOfficial/wuwa-afyg-share) — 椰果工坊：分享站 +
+  [启动器下载页](https://wuwa-afyg-share.200503.xyz/launcher)
+- [`coconut-app-plugin-sdk`](https://github.com/D4rK6/coconut-app-plugin-sdk) — 插件开发 SDK
+  （示例 + 打包 / 热部署 / 自查 / 测试）
+
+写插件请用 SDK：里面已有完整示例、类型声明和一键热重载，不必照着本文件手写单文件。
+
 ---
 
 ## 当前架构
@@ -476,6 +486,9 @@ WebView2 数据位于：
 node plugin-api/generate-tools.mjs [--dir <toolbox-static>]
 ~~~
 
+> 插件开发用 [SDK 仓库](https://github.com/D4rK6/coconut-app-plugin-sdk)：类型声明、esbuild
+> 打包、热部署、自查与示例都已配好（`deno task dev <插件id>`）。
+
 一个插件就是一个文件，开头用注释声明元数据：
 
 ~~~js
@@ -548,14 +561,16 @@ Coconut.setTimeout / Coconut.setInterval / Coconut.clearTimeout / Coconut.clearI
 
 ### 启动页「插件」弹窗
 
-右下角「卸载」左边的「插件」按钮打开：
+右下角「插件」按钮打开，右上角 ✕ / `Esc` 关闭：
 
-- 列表：名称 / 版本 / 内置徽标 / 运行状态 / 权限 / 描述 / 最近错误；
-- 每个插件：启用 / 停用、重载。**启动器里不提供删除**：要删插件就去插件目录
-  手动删文件（「打开插件目录」一键到那儿）；内置插件没有文件，只能停用；
-- 工具条：打开插件目录、重新扫描（**没有「日志」按钮**；要看日志在工具箱里按 `Ctrl+T`，只读 Console）；
-- 免费模型的开关就是内置插件「免费模型」的启用状态——原来右下角那个
-  「免费模型」开关已经删掉了。
+- 标题栏：插件数 + 启用数（有报错转红），滚动时固定在顶部；右侧是打开目录 / 重新扫描；
+- 工具条：按名称 / id / 描述 / 权限搜索，按「全部 / 已启用 / 已停用 / 异常」筛选（带数量），
+  一键全部启用 / 停用；
+- 每行：状态点 + 名称 / 版本 / 徽标 + 描述 + 权限标签 + 错误信息（悬停看全），
+  右侧是启用开关与重载；
+- **启动器里不提供删除**（手动进插件目录删；内置插件没有文件，只能停用）；
+  日志在工具箱里按 `Ctrl+T` 看，弹窗内没有日志入口；
+- 免费模型的开关就是内置插件「免费模型」的启用状态。
 
 ### 内置插件：免费模型 / 翻译
 
@@ -757,6 +772,7 @@ coconut-app/
     tauri.conf.json
     Cargo.toml
   examples/plugins/eye-care.js    插件示例（护眼滤镜）
+  plugin-api/                插件 API 类型声明 + tools.d.ts 生成（见其 README）
   package.json
   README.md
 

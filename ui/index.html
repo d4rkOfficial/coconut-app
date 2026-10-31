@@ -216,28 +216,79 @@
 
     <div class="plugins-dialog" id="plugins-dialog" hidden>
       <div class="plugins-panel" role="dialog" aria-modal="true" aria-labelledby="plugins-title">
-        <header class="plugins-masthead">
-          <div class="plugins-heading">
-            <span class="plugins-kicker">Coconut Toolbox · Extensions</span>
-            <div class="plugins-titleline">
-              <h2 id="plugins-title" data-i18n="plugins.title">插件</h2>
-              <span class="plugins-title-en">Plugins</span>
+        <header class="plugins-head">
+          <div class="plugins-ident">
+            <span class="plugins-glyph" aria-hidden="true">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M10 4.5a2 2 0 0 1 4 0V6h2.5A1.5 1.5 0 0 1 18 7.5V10h1.5a2 2 0 0 1 0 4H18v2.5a1.5 1.5 0 0 1-1.5 1.5H14v-1.5a2 2 0 0 0-4 0V18H7.5A1.5 1.5 0 0 1 6 16.5V14H4.5a2 2 0 0 1 0-4H6V7.5A1.5 1.5 0 0 1 7.5 6H10V4.5Z" />
+              </svg>
+            </span>
+            <div class="plugins-ident-text">
+              <div class="plugins-titleline">
+                <h2 id="plugins-title" data-i18n="plugins.title">插件</h2>
+                <span class="plugins-count" id="plugins-count">—</span>
+              </div>
+              <p class="plugins-hint" id="plugins-hint" data-i18n="plugins.hint">拖一个 .js 进插件目录即可安装</p>
             </div>
-            <p class="plugins-hint" id="plugins-hint" data-i18n="plugins.hint">拖一个 .js 进插件目录即可安装</p>
           </div>
-          <div class="plugins-tools">
-            <button class="secondary key-button" id="plugins-open" type="button" data-i18n="plugins.open">
+          <div class="plugins-head-actions">
+            <button class="plugins-ghost" id="plugins-open" type="button" data-i18n="plugins.open">
               打开插件目录
             </button>
-            <button class="secondary key-button" id="plugins-rescan" type="button" data-i18n="plugins.rescan">
+            <button class="plugins-ghost" id="plugins-rescan" type="button" data-i18n="plugins.rescan">
               重新扫描
+            </button>
+            <button
+              class="plugins-close"
+              id="plugins-close"
+              type="button"
+              data-i18n-title="plugins.closeTitle"
+              title="关闭"
+              aria-label="关闭"
+            >
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true">
+                <path d="M7 7l10 10M17 7L7 17" />
+              </svg>
             </button>
           </div>
         </header>
-        <ul class="plugins-list" id="plugins-list"></ul>
-        <div class="plugins-foot">
-          <button class="primary key-button" id="plugins-close" type="button" data-i18n="plugins.close">关闭</button>
+
+        <div class="plugins-toolbar">
+          <label class="plugins-search">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" aria-hidden="true">
+              <circle cx="11" cy="11" r="6.5" />
+              <path d="m16 16 4 4" />
+            </svg>
+            <input
+              id="plugins-search"
+              type="search"
+              autocomplete="off"
+              spellcheck="false"
+              data-i18n-placeholder="plugins.search"
+              placeholder="搜索插件名 / 描述 / 权限"
+            />
+          </label>
+          <div class="plugins-segments" id="plugins-filters" role="group">
+            <button type="button" data-filter="all">全部</button>
+            <button type="button" data-filter="on">已启用</button>
+            <button type="button" data-filter="off">已停用</button>
+            <button type="button" data-filter="error">异常</button>
+          </div>
+          <div class="plugins-bulk">
+            <button type="button" id="plugins-enable-all" data-i18n="plugins.enableAll">全部启用</button>
+            <button type="button" id="plugins-disable-all" data-i18n="plugins.disableAll">全部停用</button>
+          </div>
         </div>
+
+        <ul class="plugins-list" id="plugins-list"></ul>
+        <p class="plugins-blank" id="plugins-blank" hidden></p>
+
+        <footer class="plugins-foot">
+          <span class="plugins-foot-note" data-i18n="plugins.footNote">
+            改动最多 3 秒自动生效 · 停用不会删除文件
+          </span>
+          <span class="plugins-kbd">Esc</span>
+        </footer>
       </div>
     </div>
 

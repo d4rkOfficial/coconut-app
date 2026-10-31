@@ -3,7 +3,7 @@
 启动器自带、编译进 exe 的脚本（不是用户插件，但用的是**同一套 `Coconut` API**）。
 源码在这里，用 [esbuild](https://esbuild.github.io/) 打包成单文件后才进安装包。
 
-> 写**用户插件**请去 [`coconut-app-plugin-sdk`](https://github.com/D4rK6/coconut-app-plugin-sdk)：
+> 写**用户插件**请去 [`coconut-app-plugin-sdk`](https://github.com/d4rkOfficial/coconut-app-plugin-sdk)：
 > 那里有现成示例、`plugin-api/` 类型声明、`deno task dev` 热部署和自查 / 冒烟测试。
 > 本目录只放「随启动器一起发布」的内置脚本（免费模型、翻译）。
 

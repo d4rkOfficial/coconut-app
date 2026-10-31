@@ -13,7 +13,7 @@ Tauri 桌面启动器：本地打开椰果工具箱，并自动接管 AI 助手�
 - [`wuwa-afyg-tool`](https://github.com/d4rkOfficial/wuwa-afyg-tool) — 工具箱本体（SvelteKit）
 - [`wuwa-afyg-share`](https://github.com/d4rkOfficial/wuwa-afyg-share) — 椰果工坊：分享站 +
   [启动器下载页](https://wuwa-afyg-share.200503.xyz/launcher)
-- [`coconut-app-plugin-sdk`](https://github.com/D4rK6/coconut-app-plugin-sdk) — 插件开发 SDK
+- [`coconut-app-plugin-sdk`](https://github.com/d4rkOfficial/coconut-app-plugin-sdk) — 插件开发 SDK
   （示例 + 打包 / 热部署 / 自查 / 测试）
 
 写插件请用 SDK：里面已有完整示例、类型声明和一键热重载，不必照着本文件手写单文件。
@@ -486,7 +486,7 @@ WebView2 数据位于：
 node plugin-api/generate-tools.mjs [--dir <toolbox-static>]
 ~~~
 
-> 插件开发用 [SDK 仓库](https://github.com/D4rK6/coconut-app-plugin-sdk)：类型声明、esbuild
+> 插件开发用 [SDK 仓库](https://github.com/d4rkOfficial/coconut-app-plugin-sdk)：类型声明、esbuild
 > 打包、热部署、自查与示例都已配好（`deno task dev <插件id>`）。
 
 一个插件就是一个文件，开头用注释声明元数据：

@@ -5,7 +5,7 @@
 - `eye-care.js`：注入页面 CSS + 右下角浮层，`onHello` 注册、`onStop` 收干净。
 
 正式写插件请去插件开发 SDK 仓库：
-[`coconut-app-plugin-sdk`](https://github.com/D4rK6/coconut-app-plugin-sdk)
+[`coconut-app-plugin-sdk`](https://github.com/d4rkOfficial/coconut-app-plugin-sdk)
 
 SDK 的 `examples/` 里有更完整的真实插件（模块化 + `page/*.dom.js` 页面脚本 + 打包 / 热部署 / 测试）：
 

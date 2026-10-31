@@ -4,7 +4,7 @@
 实际行为写的规范。示例复制到 `plugins\` 目录即可验证。
 
 > **工程化开发请用插件开发 SDK 仓库**：
-> [`coconut-app-plugin-sdk`](https://github.com/D4rK6/coconut-app-plugin-sdk)
+> [`coconut-app-plugin-sdk`](https://github.com/d4rkOfficial/coconut-app-plugin-sdk)
 >
 > 它把本文件的规则落成了可执行环境：模块化源码（`page/*.dom.js` 放注入页面的脚本）、
 > esbuild 单文件打包（压缩 + 保留 `@name` 头部）、`deno task dev <id>` 热部署、

@@ -4,7 +4,7 @@
 启动器运行时**不会**读取这个目录（类型声明不随 exe 释放），它是给插件开发用的。
 
 > 写插件请去 **插件开发 SDK** 仓库：
-> [`coconut-app-plugin-sdk`](https://github.com/D4rK6/coconut-app-plugin-sdk)
+> [`coconut-app-plugin-sdk`](https://github.com/d4rkOfficial/coconut-app-plugin-sdk)
 >
 > SDK 里已经装好这套类型，并且带模块化示例、esbuild 单文件打包、`deno task dev` 热部署、
 > 静态自查（权限 / 头部 / 钩子 / `.dom.js` 自包含）和冒烟测试。

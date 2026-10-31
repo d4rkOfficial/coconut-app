@@ -367,7 +367,7 @@ msedge --headless --force-device-scale-factor=1 --remote-debugging-port=9223 --w
 产物：
 
 ~~~text
-src-tauri\target\release\bundle\msi\椰果工具箱_0.1.0_x64_zh-CN.msi
+src-tauri\target\release\bundle\msi\椰果工具箱_<版本>_x64_zh-CN.msi
 ~~~
 
 

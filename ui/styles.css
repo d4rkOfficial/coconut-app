@@ -1013,7 +1013,9 @@ button {
 }
 
 .uninstall-dialog[hidden],
+.plugins-dialog[hidden],
 .key-dialog[hidden] {
+  /* display:grid 会把 UA 的 [hidden]{display:none} 顶掉，必须显式关掉 */
   display: none;
 }
 

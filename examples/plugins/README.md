@@ -16,4 +16,6 @@ SDK 的 `examples/` 里有更完整的真实插件（模块化 + `page/*.dom.js`
 | `cjk-scramble` | `runJs` 注入自包含页面脚本 + `MutationObserver` |
 | `free-models` | 多文件 + IndexedDB 只读 + 幂等同步 |
 
-插件规范（钩子、权限、运行时边界）见 [`../../plugin-api/AGENTS.md`](../../plugin-api/AGENTS.md)。
+插件规范（钩子、权限、运行时边界）见 SDK 仓库的
+[`AGENTS.md`](https://github.com/d4rkOfficial/coconut-app-plugin-sdk/blob/main/AGENTS.md) 与
+[`docs/plugin-api.md`](https://github.com/d4rkOfficial/coconut-app-plugin-sdk/blob/main/docs/plugin-api.md)。

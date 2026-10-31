@@ -477,16 +477,21 @@ WebView2 数据位于：
   storage\<id>.json    插件私有 KV（Coconut.storage）
 ~~~
 
-`api` 是仓库里的插件开发工具箱（`plugin-api/`），**不再随启动器释放**：要用类型提示就把
-`plugin-api/` 拷出来、指向自己的插件文件。`tools.d.ts` 是**根据工具箱包体生成**的工具表
-（143 个工具的名字 + 入参 JSON Schema），`deno check` 时 `Coconut.callTool` 能补全工具名、
-校验参数。工具箱更新后重新生成：
+插件类型声明（`coconut-plugin.d.ts` + 生成好的 `tools.d.ts`）和 `generate-tools.mjs` **不在本仓库**，
+统一放在插件开发 SDK 里：
+
+- 仓库：[`coconut-app-plugin-sdk`](https://github.com/d4rkOfficial/coconut-app-plugin-sdk)
+- 类型与生成脚本：SDK 的 `plugin-api/`
+- 开发规则 / API 原文：SDK 的 `AGENTS.md` / `docs/plugin-api.md`
+
+`tools.d.ts` 是**根据工具箱包体生成**的工具表（143 个工具的名字 + 入参 JSON Schema），
+`deno check` 时 `Coconut.callTool` 能补全工具名、校验参数。工具箱更新后在 SDK 仓库里重新生成：
 
 ~~~text
-node plugin-api/generate-tools.mjs [--dir <toolbox-static>]
+deno task tools
 ~~~
 
-> 插件开发用 [SDK 仓库](https://github.com/d4rkOfficial/coconut-app-plugin-sdk)：类型声明、esbuild
+> 写插件请直接用 [SDK 仓库](https://github.com/d4rkOfficial/coconut-app-plugin-sdk)：类型声明、esbuild
 > 打包、热部署、自查与示例都已配好（`deno task dev <插件id>`）。
 
 一个插件就是一个文件，开头用注释声明元数据：
@@ -772,7 +777,6 @@ coconut-app/
     tauri.conf.json
     Cargo.toml
   examples/plugins/eye-care.js    插件示例（护眼滤镜）
-  plugin-api/                插件 API 类型声明 + tools.d.ts 生成（见其 README）
   package.json
   README.md
 

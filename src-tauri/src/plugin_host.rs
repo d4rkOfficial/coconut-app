@@ -34,17 +34,33 @@ const LOG_BACKUPS: usize = 10;
 /// 目录轮询间隔：拖进新文件后最多这么久自动加载。
 const POLL_INTERVAL: Duration = Duration::from_secs(3);
 
-/// 把缺失的内置插件写到插件目录；已存在的文件不覆盖。
+/// 把内置插件写到插件目录；已存在的文件只有「仍是上次导出的原样」时才随启动器更新，
+/// 用户改过就保留用户版本。
 fn materialize_builtins(dir: &Path) {
     let _ = std::fs::create_dir_all(dir);
     for (id, source) in BUILTIN_PLUGINS {
         let path = dir.join(format!("{id}.js"));
-        if path.exists() {
+        // 旁边记一份上次导出的原文：和当前文件一致 = 用户没改过，可以安全升级。
+        let marker = dir.join(format!(".{id}.builtin"));
+        let current = std::fs::read_to_string(&path).ok();
+        let previous = std::fs::read_to_string(&marker).ok();
+        if current.as_deref() == Some(*source) {
+            if previous.is_none() {
+                let _ = std::fs::write(&marker, source);
+            }
+            continue;
+        }
+        let untouched = current.is_none() || previous.as_deref() == current.as_deref();
+        // 老版本没有 marker：第一次升级允许覆盖一次，把修复带给已有用户。
+        let legacy = previous.is_none();
+        if !(untouched || legacy) {
             continue;
         }
         if let Err(error) = std::fs::write(&path, source) {
             eprintln!("[plugin] 导出内置插件 {id} 失败：{error}");
+            continue;
         }
+        let _ = std::fs::write(&marker, source);
     }
 }
 

@@ -1,5 +1,5 @@
 // @name        调试终端
-// @version     2.0.0
+// @version     2.1.0
 // @description 可读写调试终端：插件层 / DOM 层 JS、console 输出、括号感知回车
 // @permissions dom, network
 // @mount       none
@@ -75,10 +75,14 @@ const installTerminal = () => {
     <style>
       :host { all: initial; }
       .term { box-sizing: border-box; width: 100%; height: min(44dvh, 440px); display: flex;
-        flex-direction: column; background: #070907; color: #b9c2b9; border-top: 1px solid #242b24;
+        flex-direction: column; background: #070907; color: #e6ebe6; border-top: 1px solid #242b24;
         box-shadow: 0 -18px 60px rgba(0,0,0,.55); font: 12.5px/1.55 "Cascadia Mono",
         "JetBrains Mono", "SFMono-Regular", Consolas, "Liberation Mono", monospace;
         -webkit-font-smoothing: antialiased; }
+      .resize { flex: 0 0 auto; height: 7px; position: relative; cursor: ns-resize;
+        background: #0a0c0a; border-bottom: 1px solid #1b211b; touch-action: none; }
+      .resize::after { content: ''; position: absolute; left: 50%; top: 2px; width: 44px; height: 2px;
+        transform: translateX(-50%); border-radius: 999px; background: #334033; }
       .head { display: flex; align-items: center; gap: 10px; padding: 7px 12px;
         background: #161a16; border-bottom: 1px solid #242b24; flex: 0 0 auto; user-select: none; }
       .title { color: #788178; font-size: 11.5px; letter-spacing: .06em; white-space: nowrap; }
@@ -89,7 +93,7 @@ const installTerminal = () => {
         letter-spacing: .06em; cursor: pointer; padding: 2px 7px; border-radius: 3px; }
       .btn:hover { background: #242b24; color: #c9d4c9; }
       .out { flex: 1 1 auto; overflow: auto; margin: 0; padding: 10px 14px; white-space: pre-wrap;
-        word-break: break-word; color: #8b948b; }
+        word-break: break-word; color: #f3f6f3; font-weight: 600; }
       .out::-webkit-scrollbar { width: 8px; }
       .out::-webkit-scrollbar-thumb { background: #242b24; border-radius: 999px; }
       .line { display: block; min-height: 1.55em; }
@@ -97,11 +101,12 @@ const installTerminal = () => {
         background: #0a0c0a; border-top: 1px solid #1b211b; flex: 0 0 auto; }
       .sigil { color: #9fb59f; white-space: nowrap; padding-top: 3px; }
       textarea { flex: 1 1 auto; min-height: 22px; max-height: 160px; resize: none; border: 0;
-        outline: 0; background: transparent; color: #c9d4c9; font: inherit; line-height: 1.55;
-        padding: 2px 0; caret-color: #c9d4c9; }
+        outline: 0; background: transparent; color: #f3f6f3; font: inherit; font-weight: 600;
+        line-height: 1.55; padding: 2px 0; caret-color: #f3f6f3; }
       .note { color: #3f463f; font-size: 10.5px; padding: 0 14px 7px; background: #0a0c0a; }
     </style>
     <div class="term">
+      <div class="resize" data-resize title="拖动调整终端高度"></div>
       <div class="head">
         <span class="title">coconut — 调试终端</span>
         <button class="layer" data-layer>插件层</button>
@@ -115,12 +120,21 @@ const installTerminal = () => {
     </div>`;
 
   const root = shadow.querySelector('.term');
+  const resizeHandle = shadow.querySelector('[data-resize]');
   const out = shadow.querySelector('.out');
   const input = shadow.querySelector('textarea');
   const layerButton = shadow.querySelector('[data-layer]');
   const closeButton = shadow.querySelector('[data-close]');
   const clearButton = shadow.querySelector('[data-clear]');
-  const state = { visible: false, layer: 'plugin', commands: [], lines: [] };
+  const state = {
+    visible: false,
+    layer: 'plugin',
+    commands: [],
+    lines: [],
+    history: [],
+    historyIndex: 0,
+    draft: '',
+  };
 
   const isBalanced = (text) => {
     const stack = [];
@@ -189,10 +203,56 @@ const installTerminal = () => {
     out.scrollTop = out.scrollHeight;
   };
 
+  /** 上边界拖拽：改变终端高度（底部固定，向上拖变高）。 */
+  let resizing = null;
+  const clampTermHeight = (height) => {
+    const min = 140;
+    const max = Math.max(min, window.innerHeight - 24);
+    return Math.min(max, Math.max(min, height));
+  };
+  const finishResize = (event) => {
+    if (!resizing) return;
+    if (event && event.pointerId !== resizing.id) return;
+    try {
+      resizeHandle.releasePointerCapture(resizing.id);
+    } catch (error) {}
+    resizing = null;
+    host.style.userSelect = '';
+  };
+  resizeHandle.addEventListener('pointerdown', (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    resizing = {
+      id: event.pointerId,
+      startY: event.clientY,
+      startHeight: root.getBoundingClientRect().height,
+    };
+    try {
+      resizeHandle.setPointerCapture(event.pointerId);
+    } catch (error) {}
+    host.style.userSelect = 'none';
+  });
+  resizeHandle.addEventListener('pointermove', (event) => {
+    if (!resizing || event.pointerId !== resizing.id) return;
+    const next = clampTermHeight(resizing.startHeight + (resizing.startY - event.clientY));
+    root.style.height = next + 'px';
+  });
+  resizeHandle.addEventListener('pointerup', finishResize);
+  resizeHandle.addEventListener('pointercancel', finishResize);
+  resizeHandle.addEventListener('dblclick', () => {
+    root.style.height = '';
+  });
+
   const submit = () => {
     const code = input.value;
     if (!code.trim()) return;
     state.commands.push({ layer: state.layer, code });
+    if (state.history[state.history.length - 1] !== code) {
+      state.history.push(code);
+      if (state.history.length > 200) state.history.shift();
+    }
+    state.historyIndex = state.history.length;
+    state.draft = '';
     append('> ' + code);
     input.value = '';
     resizeInput();
@@ -203,6 +263,31 @@ const installTerminal = () => {
       event.preventDefault();
       event.stopPropagation();
       setLayer(state.layer === 'plugin' ? 'dom' : 'plugin');
+      return;
+    }
+    if (event.key === 'ArrowUp' || event.key === 'ArrowDown') {
+      if (!state.history.length) return;
+      event.preventDefault();
+      event.stopPropagation();
+      if (event.key === 'ArrowUp') {
+        if (state.historyIndex >= state.history.length) {
+          state.draft = input.value;
+          state.historyIndex = state.history.length - 1;
+        } else if (state.historyIndex > 0) {
+          state.historyIndex -= 1;
+        }
+      } else if (state.historyIndex < state.history.length - 1) {
+        state.historyIndex += 1;
+      } else {
+        state.historyIndex = state.history.length;
+        input.value = state.draft;
+        resizeInput();
+        input.setSelectionRange(input.value.length, input.value.length);
+        return;
+      }
+      input.value = state.history[state.historyIndex] || '';
+      resizeInput();
+      input.setSelectionRange(input.value.length, input.value.length);
       return;
     }
     if (event.key === 'Enter' && !event.shiftKey) {
@@ -225,10 +310,11 @@ const installTerminal = () => {
     out.textContent = '';
     input.focus();
   });
-  closeButton.addEventListener('click', hide);
+  closeButton.addEventListener('click', () => hide());
 
   const show = () => {
     state.visible = true;
+    if (root.style.height) root.style.height = clampTermHeight(parseFloat(root.style.height)) + 'px';
     host.style.display = 'block';
     input.focus();
     out.scrollTop = out.scrollHeight;

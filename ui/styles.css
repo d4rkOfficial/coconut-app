@@ -1165,6 +1165,10 @@ button {
   display: none;
 }
 
+.uninstall-actions button[hidden] {
+  display: none;
+}
+
 .brand {
   display: flex;
   align-items: center;

@@ -1,9 +1,11 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod console_bus;
 mod i18n;
 mod plugin;
 mod plugin_host;
 mod plugin_rt;
+mod plugin_server;
 mod server;
 
 use serde::Serialize;
@@ -96,7 +98,13 @@ const UNINSTALL_STEPS: &[(&str, [&str; 5], [&str; 5])] = &[
             "툴박스 정적 파일 삭제",
             "Delete toolbox static files",
         ],
-        ["toolbox-static", "toolbox-static", "toolbox-static", "toolbox-static", "toolbox-static"],
+        [
+            "toolbox-static",
+            "toolbox-static",
+            "toolbox-static",
+            "toolbox-static",
+            "toolbox-static",
+        ],
     ),
     (
         "game",
@@ -107,7 +115,13 @@ const UNINSTALL_STEPS: &[(&str, [&str; 5], [&str; 5])] = &[
             "게임 데이터 캐시 삭제",
             "Delete the game data cache",
         ],
-        ["game-data.json", "game-data.json", "game-data.json", "game-data.json", "game-data.json"],
+        [
+            "game-data.json",
+            "game-data.json",
+            "game-data.json",
+            "game-data.json",
+            "game-data.json",
+        ],
     ),
     (
         "models",
@@ -196,16 +210,16 @@ struct UiState {
     url: String,
     ready: bool,
     error: String,
-    models: Vec<String>,
     theme: String,
     game_version: String,
     progress: String,
     ws_url: String,
-    opencode_key_set: bool,
     has_static: bool,
     crawling: bool,
     /// 工具箱静态包是否正在自动 / 手动更新。
     updating: bool,
+    /// MSI 安装目录（存在 uninstall.exe 时非空）；便携版为空。
+    uninstaller_dir: String,
 }
 
 fn server_state(app: &tauri::AppHandle) -> Option<Arc<ServerState>> {
@@ -214,6 +228,19 @@ fn server_state(app: &tauri::AppHandle) -> Option<Arc<ServerState>> {
         .lock()
         .ok()
         .and_then(|slot| slot.clone())
+}
+
+/// MSI 安装目录：当前 exe 旁边有 uninstall.exe 时返回该目录。
+/// 便携版通常没有这个文件；有的话也按安装版处理。
+fn uninstaller_dir() -> Option<PathBuf> {
+    let exe = std::env::current_exe().ok()?;
+    let dir = exe.parent()?;
+    for name in ["uninstall.exe", "Uninstall.exe"] {
+        if dir.join(name).is_file() {
+            return Some(dir.to_path_buf());
+        }
+    }
+    None
 }
 
 fn normalize_windows_path(path: PathBuf) -> PathBuf {
@@ -244,7 +271,6 @@ fn bootstrap(state: tauri::State<'_, Boot>) -> Bootstrap {
 #[tauri::command]
 async fn get_state(app: tauri::AppHandle) -> Result<UiState, String> {
     let state = server_state(&app).ok_or_else(|| "本地服务尚未启动".to_string())?;
-    let models = state.models.read().await.clone();
     let theme = state.theme.read().await.clone();
     let error = state.error.read().await.clone();
     let commit = state.commit.read().await.clone();
@@ -252,23 +278,23 @@ async fn get_state(app: tauri::AppHandle) -> Result<UiState, String> {
     let game_version = state.game.read().await.version.clone();
     let progress = state.progress.read().await.clone();
     let ready = state.ready.load(Ordering::SeqCst);
-    let opencode_key_set = !state.api_key.read().await.trim().is_empty();
     Ok(UiState {
         commit,
         build,
         url: format!("http://127.0.0.1:{TOOLBOX_PORT}/#websocket=127.0.0.1:{WS_PORT}"),
         ready,
         error,
-        models,
         theme,
         game_version,
         progress,
         ws_url: format!("ws://127.0.0.1:{WS_PORT}"),
-        opencode_key_set,
         // 有静态产物就能启动工具箱，哪怕游戏数据还在后台拉取。
         has_static: state.static_dir.join("index.html").is_file(),
         crawling: state.crawling.load(Ordering::SeqCst),
         updating: state.updating.load(Ordering::SeqCst),
+        uninstaller_dir: uninstaller_dir()
+            .map(|dir| dir.display().to_string())
+            .unwrap_or_default(),
     })
 }
 
@@ -336,6 +362,26 @@ fn plugins_reload(app: tauri::AppHandle, id: String) -> Result<(), String> {
 }
 
 #[tauri::command]
+fn plugins_cleanup_dead(app: tauri::AppHandle) -> Result<serde_json::Value, String> {
+    let state = server_state(&app).ok_or_else(|| "本地服务尚未启动".to_string())?;
+    state.plugins.cleanup_dead()
+}
+
+#[tauri::command]
+fn open_uninstaller_dir() -> Result<String, String> {
+    let dir =
+        uninstaller_dir().ok_or_else(|| "未找到 uninstall.exe（便携版请直接退出）".to_string())?;
+    #[cfg(windows)]
+    {
+        std::process::Command::new("explorer")
+            .arg(&dir)
+            .spawn()
+            .map_err(|error| format!("打开安装目录失败：{error}"))?;
+    }
+    Ok(dir.display().to_string())
+}
+
+#[tauri::command]
 fn plugins_open_dir(app: tauri::AppHandle) -> Result<String, String> {
     let state = server_state(&app).ok_or_else(|| "本地服务尚未启动".to_string())?;
     let dir = state.plugins.dir().to_path_buf();
@@ -355,15 +401,6 @@ async fn set_language(app: tauri::AppHandle, lang: String) -> Result<String, Str
     let state = server_state(&app).ok_or_else(|| "本地服务尚未启动".to_string())?;
     state.set_language(&lang).await?;
     Ok(state.lang().await.tag().to_string())
-}
-
-#[tauri::command]
-async fn set_opencode_key(app: tauri::AppHandle, key: String) -> Result<(), String> {
-    let state = server_state(&app).ok_or_else(|| "本地服务尚未启动".to_string())?;
-    state.set_api_key(key).await?;
-    // 立即把新 Key 写回工具箱已有的 AI 配置。
-    state.ws.sync_all(state.clone()).await;
-    Ok(())
 }
 
 #[tauri::command]
@@ -445,9 +482,11 @@ async fn set_theme(app: tauri::AppHandle, theme: String) -> Result<(), String> {
     Ok(())
 }
 
-
 #[tauri::command]
-async fn start_uninstall(window: tauri::WebviewWindow, app: tauri::AppHandle) -> Result<(), String> {
+async fn start_uninstall(
+    window: tauri::WebviewWindow,
+    app: tauri::AppHandle,
+) -> Result<(), String> {
     let lang = match server_state(&app) {
         Some(state) => state.lang().await,
         None => crate::i18n::Lang::En,
@@ -772,7 +811,10 @@ fn prepare_static_dir(app: &tauri::App, data_dir: &Path) -> PathBuf {
             Ok(()) if target.join("index.html").is_file() => {
                 return normalize_windows_path(fs::canonicalize(&target).unwrap_or(target));
             }
-            _ => eprintln!("[setup] 从 {} 复制静态文件失败，改用内嵌压缩包", bundled.display()),
+            _ => eprintln!(
+                "[setup] 从 {} 复制静态文件失败，改用内嵌压缩包",
+                bundled.display()
+            ),
         }
     }
 
@@ -835,7 +877,9 @@ fn main() {
     let app = tauri::Builder::default()
         .manage(AppServer(Mutex::new(None)))
         .manage(Launched(AtomicBool::new(false)))
-        .manage(Uninstall(Arc::new(Mutex::new(UninstallProgress::default()))))
+        .manage(Uninstall(Arc::new(
+            Mutex::new(UninstallProgress::default()),
+        )))
         .manage(Boot(Mutex::new(Bootstrap {
             data_dir: String::new(),
             service_url: format!("http://127.0.0.1:{TOOLBOX_PORT}"),
@@ -850,11 +894,12 @@ fn main() {
             check_game_update,
             update_game_data,
             set_language,
-            set_opencode_key,
             plugins_list,
             plugins_set_enabled,
             plugins_reload,
             plugins_open_dir,
+            plugins_cleanup_dead,
+            open_uninstaller_dir,
             switch_mirror,
             open_toolbox_window,
             set_window_title,
@@ -956,8 +1001,7 @@ fn main() {
                         }
                         Ok(None) => {}
                         Err(error) => {
-                            auto_state
-                                .log("update", &format!("启动时自动更新跳过：{error}"));
+                            auto_state.log("update", &format!("启动时自动更新跳过：{error}"));
                             eprintln!("[auto-update] 已跳过：{error}");
                         }
                     }

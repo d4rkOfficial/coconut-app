@@ -307,6 +307,8 @@ function updatePluginChrome(list) {
   const disableAll = $('plugins-disable-all');
   if (enableAll) enableAll.disabled = pluginBusy || total === 0 || enabled === total;
   if (disableAll) disableAll.disabled = pluginBusy || enabled === 0;
+  const cleanup = $('plugins-cleanup');
+  if (cleanup) cleanup.disabled = pluginBusy;
 }
 
 function pluginPermChips(permissions) {
@@ -504,6 +506,27 @@ async function bulkPluginAction(enabled) {
   await loadPlugins();
 }
 
+/** 清理已从目录删除的插件留下的 state / storage 残留。 */
+async function cleanupDeadPlugins() {
+  if (pluginBusy) return;
+  pluginBusy = true;
+  updatePluginChrome(pluginEntries);
+  try {
+    const result = await invoke('plugins_cleanup_dead');
+    const states = Number(result?.states || 0);
+    const storage = Number(result?.storage || 0);
+    if (!states && !storage) {
+      setStatus(t('plugins.cleanupEmpty'), 'ready', true);
+    } else {
+      setStatus(t('plugins.cleanupToast', { states, storage }), 'ready', true);
+    }
+  } catch (error) {
+    setStatus(t('plugins.cleanupFailed', { detail: error?.message || error }), 'error', true);
+  }
+  pluginBusy = false;
+  await loadPlugins();
+}
+
 function closePlugins() {
   $('plugins-dialog').hidden = true;
 }
@@ -538,6 +561,7 @@ function initPlugins() {
     }
   });
   $('plugins-rescan').addEventListener('click', loadPlugins);
+  $('plugins-cleanup').addEventListener('click', cleanupDeadPlugins);
 
   $('plugins-search').addEventListener('input', (event) => {
     pluginQuery = String(event.target.value || '').trim().toLowerCase();
@@ -772,6 +796,11 @@ function openUninstallDialog() {
   $('uninstall-steps').textContent = '';
   $('uninstall-foot').textContent = t('uninstall.ready');
   $('uninstall-bar').style.width = '0%';
+  $('uninstall-actions').hidden = true;
+  const primary = $('uninstall-exit');
+  primary.dataset.mode = 'exit';
+  primary.textContent = t('uninstall.exit');
+  $('uninstall-exit-app').hidden = true;
   dialog.hidden = false;
 }
 
@@ -797,8 +826,8 @@ function buildUninstallSteps(steps) {
   }
 }
 
-function renderUninstall(state) {
-  const steps = Array.isArray(state.steps) ? state.steps : [];
+function renderUninstall(progress) {
+  const steps = Array.isArray(progress.steps) ? progress.steps : [];
   if (!steps.length) return;
   const list = $('uninstall-steps');
   if (list.childElementCount !== steps.length) buildUninstallSteps(steps);
@@ -810,11 +839,25 @@ function renderUninstall(state) {
   const failed = steps.some((step) => step.status === 'failed');
   const percent = Math.round((finished / steps.length) * 100);
   $('uninstall-bar').style.width = percent + '%';
-  if (state.error) {
-    $('uninstall-foot').textContent = t('uninstall.error', { detail: state.error });
-  } else if (state.done) {
+  if (progress.error) {
+    $('uninstall-foot').textContent = t('uninstall.error', { detail: progress.error });
+  } else if (progress.done) {
+    const installed = Boolean(state && state.uninstaller_dir);
     $('uninstall-actions').hidden = false;
-    if (!exitDeadline) $('uninstall-foot').textContent = t('uninstall.completed');
+    const primary = $('uninstall-exit');
+    const secondary = $('uninstall-exit-app');
+    if (installed) {
+      primary.dataset.mode = 'installer';
+      primary.textContent = t('uninstall.openInstallDir');
+      secondary.hidden = false;
+      secondary.textContent = t('uninstall.exit');
+      if (!exitDeadline) $('uninstall-foot').textContent = t('uninstall.completedInstalled');
+    } else {
+      primary.dataset.mode = 'exit';
+      primary.textContent = t('uninstall.exit');
+      secondary.hidden = true;
+      if (!exitDeadline) $('uninstall-foot').textContent = t('uninstall.completed');
+    }
   } else {
     $('uninstall-foot').textContent = t('uninstall.stepProgress', {
       current: Math.min(finished + 1, steps.length),
@@ -824,9 +867,10 @@ function renderUninstall(state) {
   }
 }
 
-/** 卸载完成后不再自动秒退：等用户点退出，或 5 分钟后静默退出。 */
-function startExitCountdown() {
-  if (exitDeadline) return;
+/** 卸载完成后不再自动秒退：等用户点退出，或 5 分钟后静默退出。
+ *  MSI 安装版需要用户手动运行 uninstall.exe，因此不自动退出。 */
+function startExitCountdown(auto = true) {
+  if (!auto || exitDeadline) return;
   exitDeadline = Date.now() + AUTO_EXIT_MS;
   const paint = () => {
     const left = Math.max(0, exitDeadline - Date.now());
@@ -860,7 +904,7 @@ async function runUninstall() {
       if (progress.done) {
         clearInterval(uninstallTimer);
         uninstallTimer = 0;
-        startExitCountdown();
+        startExitCountdown(!(state && state.uninstaller_dir));
         setStatus(t('status.uninstalled'), 'ready');
       }
     } catch (error) {
@@ -880,6 +924,40 @@ async function runUninstall() {
     disableActions(false);
     setPhase('READY');
     setStatus(t('status.uninstallFailed', { detail }), 'error', true);
+  }
+}
+
+async function exitLauncher(button) {
+  if (!button || button.disabled) return;
+  const label = button.textContent;
+  button.disabled = true;
+  button.textContent = t('uninstall.exiting');
+  try {
+    await invoke('exit_app');
+  } catch (error) {
+    button.disabled = false;
+    button.textContent = label;
+  }
+}
+
+async function handleUninstallPrimary() {
+  const button = $('uninstall-exit');
+  if (button.dataset.mode !== 'installer') {
+    await exitLauncher(button);
+    return;
+  }
+  if (button.disabled) return;
+  button.disabled = true;
+  try {
+    const dir = await invoke('open_uninstaller_dir');
+    $('uninstall-foot').textContent = t('uninstall.openedDir', { dir });
+    setStatus(t('uninstall.openedDir', { dir }), 'ready', true);
+  } catch (error) {
+    const detail = error?.message || String(error) || '';
+    $('uninstall-foot').textContent = t('uninstall.openDirFailed', { detail });
+    setStatus(t('uninstall.openDirFailed', { detail }), 'error', true);
+  } finally {
+    button.disabled = false;
   }
 }
 
@@ -1067,17 +1145,8 @@ async function init() {
   invoke('set_language', { lang: window.COCONUT_LANG.locale }).catch(() => {});
   $('uninstall').addEventListener('click', runUninstall);
   initPlugins();
-  $('uninstall-exit').addEventListener('click', async () => {
-    const button = $('uninstall-exit');
-    button.disabled = true;
-    button.textContent = t('uninstall.exiting');
-    try {
-      await invoke('exit_app');
-    } catch (error) {
-      button.disabled = false;
-      button.textContent = t('uninstall.exit');
-    }
-  });
+  $('uninstall-exit').addEventListener('click', handleUninstallPrimary);
+  $('uninstall-exit-app').addEventListener('click', () => exitLauncher($('uninstall-exit-app')));
   $('theme-toggle').addEventListener('click', toggleTheme);
   $('win-min').addEventListener('click', () => {
     invoke('window_minimize').catch(() => {});

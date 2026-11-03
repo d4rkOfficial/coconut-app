@@ -4,9 +4,9 @@ use axum::{
         ws::{Message, WebSocket, WebSocketUpgrade},
         DefaultBodyLimit, Path as AxumPath, RawQuery, State,
     },
-    http::{header, HeaderMap, HeaderName, HeaderValue, Method, StatusCode},
+    http::{header, HeaderMap, HeaderValue, Method, StatusCode},
     response::{IntoResponse, Response},
-    routing::{any, get, post},
+    routing::{any, get},
     Json, Router,
 };
 use bytes::Bytes;
@@ -15,15 +15,13 @@ use rand::Rng;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet};
-use std::convert::Infallible;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tauri::Manager;
 use tokio::net::TcpListener;
 use tokio::sync::{mpsc, oneshot, Mutex, RwLock};
-use tokio_stream::wrappers::ReceiverStream;
 use tower_http::cors::{Any, CorsLayer};
 use tower_http::services::{ServeDir, ServeFile};
 
@@ -36,7 +34,6 @@ pub const WS_PORT: u16 = 8765;
 /// 工坊同站反代端口：工坊官方域在 iframe 里是跨站，Cookie 会因 SameSite 丢失；
 /// 换成 127.0.0.1 的另一个端口就变成同站（SameSite 只看站点，不看端口）。
 pub const WORKSHOP_PORT: u16 = 47822;
-const UPSTREAM: &str = "https://opencode.ai/inference/v1";
 const API_UPSTREAM: &str = "https://wuwa-afyg-tool.200503.xyz";
 const DIST_MANIFEST_URL: &str =
     "https://github.com/d4rkOfficial/wuwa-afyg-tool/releases/latest/download/manifest.json";
@@ -45,14 +42,9 @@ const DIST_ARCHIVE_URL: &str =
 // GitHub Release 资产走 release-assets.githubusercontent.com，部分网络会重置连接。
 // 直连失败后依次尝试这些 GitHub 加速镜像；镜像只是兜底，不参与 manifest 检查。
 const DIST_ARCHIVE_MIRRORS: &[&str] = &["https://gh-proxy.com/", "https://ghfast.top/"];
-const USER_AGENT: &str = "opencode/1.19.3";
-// 免费模型列表一天只向上游拉一次，避免频繁握手触发风控。
-const MODELS_TTL: Duration = Duration::from_secs(24 * 60 * 60);
-// 列表抓取失败（冷启动无缓存）时的重试间隔。
-const MODELS_RETRY: Duration = Duration::from_secs(10 * 60);
+// 免费模型由 SDK 插件自带 HTTP 服务，启动器不再内置 opencode 代理。
 /// 下载 / 读清单时「多久收不到数据」就放弃当前来源，转下一个镜像。
 const STREAM_IDLE_TIMEOUT: Duration = Duration::from_secs(30);
-const PUBLIC_KEY: &str = "public";
 const MIRROR_SWITCHED: &str = "__mirror_switched__";
 /// 工具箱自带 PWA Service Worker，会预缓存 `/` 和 `_app` 资源。
 /// 启动器每次进工具箱都换一份「空壳 + 清预缓存」的 sw.js：
@@ -105,18 +97,12 @@ pub struct ServerState {
     pub icons_dir: PathBuf,
     pub game: RwLock<GameData>,
     pub client: reqwest::Client,
-    pub models: RwLock<Vec<String>>,
-    pub models_at: RwLock<Option<Instant>>,
-    pub models_file: PathBuf,
-    pub api_key: RwLock<String>,
-    pub key_file: PathBuf,
     pub mirror_index: AtomicUsize,
     pub mirror_gen: AtomicUsize,
     pub theme: RwLock<String>,
     pub commit: RwLock<String>,
     pub build: RwLock<String>,
     pub progress: RwLock<String>,
-    pub url: String,
     pub ready: AtomicBool,
     pub error: RwLock<String>,
     pub ws: WsHub,
@@ -131,6 +117,8 @@ pub struct ServerState {
     pub updating: AtomicBool,
     /// 插件管理器（内置 + 用户插件）。
     pub plugins: Plugins,
+    /// console.* 的环形缓冲（内置调试终端轮询）。
+    pub console: crate::console_bus::ConsoleBus,
     /// 启动页语言（前端按系统语言探测后通过 set_language 告诉这边）
     pub lang: RwLock<Lang>,
     /// WS 帧广播：debug 插件订阅用。
@@ -200,18 +188,15 @@ impl WsSession {
                 } else {
                     // 工具箱的 result 是 {type,id,ok,data}，data 才是工具返回值：
                     // run_js -> {value,logs}，其它工具 -> 工具自己的对象。
-                    Ok(value
-                        .get("data")
-                        .cloned()
-                        .unwrap_or_else(|| {
-                            let mut payload = value;
-                            if let Some(object) = payload.as_object_mut() {
-                                object.remove("type");
-                                object.remove("id");
-                                object.remove("ok");
-                            }
-                            payload
-                        }))
+                    Ok(value.get("data").cloned().unwrap_or_else(|| {
+                        let mut payload = value;
+                        if let Some(object) = payload.as_object_mut() {
+                            object.remove("type");
+                            object.remove("id");
+                            object.remove("ok");
+                        }
+                        payload
+                    }))
                 }
             }
             Ok(Err(_)) => Err("WS 请求被取消".into()),
@@ -240,11 +225,6 @@ impl WsHub {
 
     async fn snapshot(&self) -> Vec<Arc<WsSession>> {
         self.sessions.lock().await.clone()
-    }
-
-    /// 让插件重新跑一次同步（免费模型插件监听 resync 事件）。
-    pub async fn sync_all(&self, state: Arc<ServerState>) {
-        state.plugins.event(json!({ "type": "resync" }));
     }
 
     pub async fn set_theme(&self, theme: &str) {
@@ -284,76 +264,6 @@ impl ServerState {
         }
     }
 
-    pub async fn model_ids(&self, force: bool) -> Vec<String> {
-        let fresh = {
-            let at = *self.models_at.read().await;
-            at.map(|value| value.elapsed() < MODELS_TTL)
-                .unwrap_or(false)
-        };
-        if !force && fresh {
-            return self.models.read().await.clone();
-        }
-
-        // 磁盘缓存仍然新鲜：一天内重启启动器也不重新打上游。
-        if let Some((cached, stamp)) = read_models_cache(&self.models_file) {
-            let age = SystemTime::now()
-                .duration_since(stamp)
-                .unwrap_or_default();
-            if age < MODELS_TTL {
-                let mut models = self.models.write().await;
-                if *models != cached {
-                    *models = cached.clone();
-                }
-                drop(models);
-                if let Some(at) = Instant::now().checked_sub(age) {
-                    *self.models_at.write().await = Some(at);
-                }
-                return cached;
-            }
-        }
-
-        let response = self
-            .client
-            .get(format!("{UPSTREAM}/models"))
-            .header("user-agent", USER_AGENT)
-            .header("accept", "application/json")
-            .timeout(Duration::from_secs(8))
-            .send()
-            .await;
-
-        if let Ok(response) = response {
-            if response.status().is_success() {
-                if let Ok(payload) = response.json::<Value>().await {
-                    let ids = extract_public_models(&payload);
-                    if !ids.is_empty() {
-                        *self.models.write().await = ids.clone();
-                        *self.models_at.write().await = Some(Instant::now());
-                        write_models_cache(&self.models_file, &ids);
-                        self.log("models", &format!("上游免费模型已更新：{}", ids.join(", ")));
-                        return ids;
-                    }
-                }
-            }
-        }
-
-        self.log("models", "拉取上游模型列表失败，沿用上次结果");
-        let current = self.models.read().await.clone();
-        if !current.is_empty() {
-            return current;
-        }
-        // 内存为空时退回磁盘上的旧缓存（即使已经过期），总比没有模型好。
-        if let Some((cached, _)) = read_models_cache(&self.models_file) {
-            *self.models.write().await = cached.clone();
-            return cached;
-        }
-        Vec::new()
-    }
-
-    /// 当前主题（light / dark）。
-    pub async fn theme(&self) -> String {
-        self.theme.read().await.clone()
-    }
-
     /// 切换主题并落盘，同时把 theme_mode 推给工具箱。
     pub async fn set_theme(&self, theme: &str) -> Result<String, String> {
         let value = if theme == "dark" { "dark" } else { "light" };
@@ -383,7 +293,11 @@ impl ServerState {
         *slot = next;
         drop(slot);
         if changed {
-            let theme = self.theme.try_read().map(|theme| theme.clone()).unwrap_or_default();
+            let theme = self
+                .theme
+                .try_read()
+                .map(|theme| theme.clone())
+                .unwrap_or_default();
             write_settings(
                 &self.settings_file,
                 LauncherSettings {
@@ -393,59 +307,6 @@ impl ServerState {
             )?;
         }
         Ok(changed)
-    }
-
-    /// 读日志文件的最后 N 行（工具箱里的只读 Console 用）。
-    /// source：`plugins`（插件日志）或 `service`（启动器运行日志）。
-    pub fn log_tail(&self, source: &str, limit: usize) -> Vec<String> {
-        let path = match source {
-            "service" => self.data_dir.join("service.log"),
-            _ => self.plugins.log_path().to_path_buf(),
-        };
-        let text = std::fs::read_to_string(&path).unwrap_or_default();
-        let mut lines: Vec<String> = text.lines().map(str::to_string).collect();
-        if lines.len() > limit {
-            lines = lines.split_off(lines.len() - limit);
-        }
-        lines
-    }
-
-    pub async fn set_api_key(&self, key: String) -> Result<(), String> {
-        let key = key.trim().to_string();
-        if !key.is_empty() && !looks_like_api_key(&key) {
-            return Err("opencode API Key 格式不合法（只允许字母、数字和 - _ . ~ + / =）".into());
-        }
-        *self.api_key.write().await = key.clone();
-        let payload = json!({ "key": key });
-        std::fs::write(
-            &self.key_file,
-            serde_json::to_vec_pretty(&payload).unwrap_or_default(),
-        )
-        .map_err(|error| format!("写入 opencode Key 失败：{error}"))?;
-        self.log(
-            "key",
-            if key.is_empty() {
-                "已清除 opencode API Key"
-            } else {
-                "已更新 opencode API Key"
-            },
-        );
-        Ok(())
-    }
-
-    /// 当前调用方应当转发给上游的 Authorization 值。
-    pub async fn client_auth(&self, caller: Option<&str>) -> String {
-        // 兼容 `Bearer xxx` / `bearer xxx` / 直接给 key 三种写法。
-        let caller_key = caller.map(str::trim).map(strip_bearer).unwrap_or("");
-        if looks_like_api_key(caller_key) {
-            return format!("Bearer {caller_key}");
-        }
-        let stored = self.api_key.read().await.clone();
-        if looks_like_api_key(&stored) {
-            return format!("Bearer {stored}");
-        }
-        // 格式不合法或未配置：按公开额度处理。
-        format!("Bearer {PUBLIC_KEY}")
     }
 
     pub fn mirror_count(&self) -> usize {
@@ -580,71 +441,6 @@ fn rotated_sources(start: usize) -> Vec<(usize, String)> {
         .collect()
 }
 
-/// 上游 id -> 对外 id：去掉 `-free` 后缀；big-pickle 不对外暴露。
-fn public_model_id(id: &str) -> Option<String> {
-    if id == "big-pickle" {
-        return None;
-    }
-    let base = id.strip_suffix("-free")?;
-    if base.is_empty() {
-        None
-    } else {
-        Some(base.to_string())
-    }
-}
-
-fn upstream_model_id(public: &str) -> String {
-    format!("{public}-free")
-}
-
-fn extract_public_models(payload: &Value) -> Vec<String> {
-    let mut ids: Vec<String> = payload["data"]
-        .as_array()
-        .map(|items| {
-            items
-                .iter()
-                .filter_map(|item| item["id"].as_str())
-                .filter(|id| !id.starts_with("jev-"))
-                .filter_map(public_model_id)
-                .collect()
-        })
-        .unwrap_or_default();
-    ids.sort();
-    ids.dedup();
-    ids
-}
-
-fn read_models_cache(path: &PathBuf) -> Option<(Vec<String>, SystemTime)> {
-    let text = std::fs::read_to_string(path).ok()?;
-    let value: Value = serde_json::from_str(&text).ok()?;
-    let stamp = value["fetchedAt"].as_u64()?;
-    let ids: Vec<String> = value["models"]
-        .as_array()?
-        .iter()
-        .filter_map(|item| item.as_str().map(str::to_string))
-        .collect();
-    if ids.is_empty() {
-        return None;
-    }
-    let time = UNIX_EPOCH.checked_add(Duration::from_secs(stamp))?;
-    Some((ids, time))
-}
-
-fn write_models_cache(path: &PathBuf, ids: &[String]) {
-    let stamp = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs();
-    let payload = json!({ "fetchedAt": stamp, "models": ids });
-    if let Some(parent) = path.parent() {
-        let _ = std::fs::create_dir_all(parent);
-    }
-    let _ = std::fs::write(
-        path,
-        serde_json::to_vec_pretty(&payload).unwrap_or_default(),
-    );
-}
-
 /// 启动器自己的设置（data_dir/settings.json）。
 #[derive(Clone)]
 struct LauncherSettings {
@@ -690,67 +486,6 @@ fn write_settings(path: &PathBuf, settings: LauncherSettings) -> Result<(), Stri
         serde_json::to_vec_pretty(&payload).unwrap_or_default(),
     )
     .map_err(|error| format!("保存启动器设置失败：{error}"))
-}
-
-/// 去掉 `Bearer ` 前缀（大小写不敏感），返回裸 Key。
-fn strip_bearer(value: &str) -> &str {
-    match value.trim().split_once(' ') {
-        Some((scheme, key)) if scheme.eq_ignore_ascii_case("bearer") => key.trim(),
-        _ => value.trim(),
-    }
-}
-
-/// 判断调用方带来的 Key 是否是「看起来合法」的 opencode Key。
-fn looks_like_api_key(value: &str) -> bool {
-    let key = value.trim();
-    if key.len() < 8 || key.len() > 200 {
-        return false;
-    }
-    if matches!(
-        key.to_ascii_lowercase().as_str(),
-        "public" | "undefined" | "null" | "none" | "bearer"
-    ) {
-        return false;
-    }
-    key.chars()
-        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.' | '~' | '+' | '/' | '='))
-}
-
-fn session_id() -> String {
-    let now = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis() as u64;
-    let stamp = now * 0x1000 + rand::thread_rng().gen_range(0..0x1000);
-    let masked = !stamp;
-    let mut hex = String::new();
-    for shift in [40u32, 32, 24, 16, 8, 0] {
-        hex.push_str(&format!("{:02x}", ((masked >> shift) & 0xff) as u8));
-    }
-    let alphabet = b"0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
-    let mut tail = String::new();
-    let mut rng = rand::thread_rng();
-    for _ in 0..14 {
-        tail.push(alphabet[rng.gen_range(0..alphabet.len())] as char);
-    }
-    format!("ses_{hex}{tail}")
-}
-
-fn read_tool() -> Value {
-    json!({
-        "type": "function",
-        "function": {
-            "name": "read",
-            "description": "Read a file from the local filesystem.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "filePath": { "type": "string", "description": "The absolute path of the file to read." }
-                },
-                "required": ["filePath"]
-            }
-        }
-    })
 }
 
 fn filter_response_headers(headers: &HeaderMap) -> HeaderMap {
@@ -819,6 +554,19 @@ fn resolve_icon(
     None
 }
 
+/// 内置调试终端读取 console.* 的接口（本地服务，不是公开插件 API）。
+async fn console_handler(
+    State(state): State<Arc<ServerState>>,
+    RawQuery(query): RawQuery,
+) -> Response {
+    let since = query
+        .as_deref()
+        .and_then(|raw| raw.split('&').find_map(|pair| pair.strip_prefix("since=")))
+        .and_then(|value| value.parse::<u64>().ok())
+        .unwrap_or(0);
+    Json(state.console.snapshot(since)).into_response()
+}
+
 async fn icons_handler(
     State(state): State<Arc<ServerState>>,
     AxumPath(path): AxumPath<String>,
@@ -851,7 +599,10 @@ async fn icons_handler(
 async fn sw_handler() -> impl IntoResponse {
     (
         [
-            (header::CONTENT_TYPE, "application/javascript; charset=utf-8"),
+            (
+                header::CONTENT_TYPE,
+                "application/javascript; charset=utf-8",
+            ),
             (header::CACHE_CONTROL, "no-cache"),
         ],
         SW_KILL,
@@ -866,11 +617,13 @@ fn static_cache_value(path: &str) -> Option<&'static str> {
     if path.starts_with("/v1/") || path.starts_with("/api/") {
         return None;
     }
-    Some(if path.starts_with("/_app/immutable/") || path.starts_with("/icons/") {
-        "public, max-age=31536000, immutable"
-    } else {
-        "no-cache"
-    })
+    Some(
+        if path.starts_with("/_app/immutable/") || path.starts_with("/icons/") {
+            "public, max-age=31536000, immutable"
+        } else {
+            "no-cache"
+        },
+    )
 }
 
 async fn cache_control(request: axum::extract::Request, next: axum::middleware::Next) -> Response {
@@ -884,7 +637,8 @@ async fn cache_control(request: axum::extract::Request, next: axum::middleware::
     response
 }
 
-async fn api_proxy(    State(state): State<Arc<ServerState>>,
+async fn api_proxy(
+    State(state): State<Arc<ServerState>>,
     AxumPath(path): AxumPath<String>,
     RawQuery(query): RawQuery,
     request: axum::extract::Request,
@@ -967,7 +721,10 @@ fn rewrite_location(value: &str, base: &str) -> String {
 
 /// 工坊反代：把任意工坊实例（用户填的地址）搬到 127.0.0.1:47822，使其与工具箱同站。
 /// iframe 首次导航带 `?__coconut_target=<origin>` 指定上游，之后的绝对路径请求沿用它。
-async fn workshop_proxy(State(state): State<Arc<ServerState>>, request: axum::extract::Request) -> Response {
+async fn workshop_proxy(
+    State(state): State<Arc<ServerState>>,
+    request: axum::extract::Request,
+) -> Response {
     let method = request.method().clone();
     let path = request.uri().path().to_string();
     let raw_query = request.uri().query().unwrap_or("").to_string();
@@ -1060,7 +817,8 @@ async fn workshop_proxy(State(state): State<Arc<ServerState>>, request: axum::ex
                     }
                     "location" => {
                         if let Ok(text) = value.to_str() {
-                            if let Ok(header) = HeaderValue::from_str(&rewrite_location(text, &base))
+                            if let Ok(header) =
+                                HeaderValue::from_str(&rewrite_location(text, &base))
                             {
                                 target_headers.append("location", header);
                             }
@@ -1088,421 +846,6 @@ async fn workshop_proxy(State(state): State<Arc<ServerState>>, request: axum::ex
         )
             .into_response(),
     }
-}
-
-async fn models_handler(State(state): State<Arc<ServerState>>) -> Response {
-    let ids = state.model_ids(false).await;
-    let data: Vec<Value> = ids
-        .iter()
-        .map(|id| json!({ "id": id, "object": "model", "owned_by": "opencode" }))
-        .collect();
-    Json(json!({ "object": "list", "data": data })).into_response()
-}
-
-fn upstream_headers(auth: &str) -> HeaderMap {
-    let mut headers = HeaderMap::new();
-    headers.insert("content-type", HeaderValue::from_static("application/json"));
-    headers.insert(
-        "accept",
-        HeaderValue::from_static("application/json, text/event-stream"),
-    );
-    if let Ok(value) = HeaderValue::from_str(auth) {
-        headers.insert("authorization", value);
-    } else {
-        headers.insert(
-            "authorization",
-            HeaderValue::from_static("Bearer public"),
-        );
-    }
-    headers.insert("user-agent", HeaderValue::from_static(USER_AGENT));
-    let session = session_id();
-    if let Ok(value) = HeaderValue::from_str(&session) {
-        headers.insert(HeaderName::from_static("x-opencode-session"), value.clone());
-        headers.insert(HeaderName::from_static("x-opencode-session-id"), value);
-    }
-    headers
-}
-
-async fn chat_handler(
-    State(state): State<Arc<ServerState>>,
-    request: axum::extract::Request,
-) -> Response {
-    let caller_auth = request
-        .headers()
-        .get("authorization")
-        .and_then(|value| value.to_str().ok())
-        .map(str::to_string);
-    let body = match to_bytes(request.into_body(), 32 * 1024 * 1024).await {
-        Ok(value) => value,
-        Err(_) => return (StatusCode::PAYLOAD_TOO_LARGE, "request too large").into_response(),
-    };
-    let mut payload: Value = match serde_json::from_slice(&body) {
-        Ok(value) => value,
-        Err(_) => {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(json!({ "error": { "message": "invalid JSON body", "type": "invalid_request_error" } })),
-            )
-                .into_response()
-        }
-    };
-
-    if !payload
-        .get("messages")
-        .map(Value::is_array)
-        .unwrap_or(false)
-    {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(json!({ "error": { "message": "messages must be an array", "type": "invalid_request_error" } })),
-        )
-            .into_response();
-    }
-
-    let requested = payload["model"]
-        .as_str()
-        .unwrap_or("")
-        .split('/')
-        .last()
-        .unwrap_or("")
-        .to_string();
-    // 兼容还没同步过的旧配置：调用方仍然带着 -free 后缀。
-    let requested = requested
-        .strip_suffix("-free")
-        .unwrap_or(&requested)
-        .to_string();
-    let ids = state.model_ids(false).await;
-    if ids.is_empty() {
-        return (
-            StatusCode::SERVICE_UNAVAILABLE,
-            Json(json!({ "error": { "message": "免费模型列表为空", "type": "upstream_error" } })),
-        )
-            .into_response();
-    }
-    let target = if ids.contains(&requested) {
-        requested.clone()
-    } else {
-        ids[0].clone()
-    };
-    let auth = state.client_auth(caller_auth.as_deref()).await;
-    let mut candidates = vec![target.clone()];
-    for id in ids.iter() {
-        if id != &target {
-            candidates.push(id.clone());
-        }
-    }
-
-    let caller_tools = payload["tools"].as_array().cloned().unwrap_or_default();
-    let has_read = caller_tools
-        .iter()
-        .any(|tool| tool.pointer("/function/name").and_then(Value::as_str) == Some("read"));
-    let bridge = !has_read;
-    let mut tools = caller_tools.clone();
-    if bridge {
-        tools.push(read_tool());
-    }
-    let caller_has_tools = !caller_tools.is_empty();
-    let wants_stream = payload["stream"].as_bool().unwrap_or(false);
-
-    let mut last_status = StatusCode::BAD_GATEWAY;
-    let mut last_message = String::new();
-    let mut chosen: Option<(reqwest::Response, String)> = None;
-
-    for model in candidates {
-        // 对调用方隐藏 -free 后缀，转发时补回上游真实模型名。
-        payload["model"] = json!(upstream_model_id(&model));
-        payload["stream"] = json!(true);
-        if !tools.is_empty() {
-            payload["tools"] = json!(tools);
-        } else {
-            payload.as_object_mut().map(|object| object.remove("tools"));
-        }
-        if !caller_has_tools && bridge {
-            payload["tool_choice"] = json!("none");
-        }
-
-        let response = state
-            .client
-            .post(format!("{UPSTREAM}/chat/completions"))
-            .headers(upstream_headers(&auth))
-            .json(&payload)
-            .send()
-            .await;
-
-        match response {
-            Err(error) => {
-                last_status = StatusCode::BAD_GATEWAY;
-                last_message = error.to_string();
-            }
-            Ok(value) if value.status().is_success() => {
-                chosen = Some((value, model));
-            }
-            Ok(value) => {
-                last_status = value.status();
-                last_message = value.text().await.unwrap_or_default();
-            }
-        }
-
-        if chosen.is_some() {
-            break;
-        }
-    }
-
-    let (upstream, served_by) = match chosen {
-        Some(value) => value,
-        None => {
-            return (
-                last_status,
-                Json(json!({
-                    "error": {
-                        "message": format!("All free models failed: {last_message}"),
-                        "type": "upstream_error"
-                    }
-                })),
-            )
-                .into_response()
-        }
-    };
-
-    let requested_model = requested.clone();
-    let fallback = served_by != requested_model;
-    let strip_read = bridge;
-
-    if wants_stream {
-        let (tx, rx) = mpsc::channel::<Result<Bytes, Infallible>>(32);
-        tokio::spawn(relay_stream(upstream, tx, requested_model, strip_read));
-        let body = Body::from_stream(ReceiverStream::new(rx));
-        let mut response = Response::new(body);
-        response.headers_mut().insert(
-            "content-type",
-            HeaderValue::from_static("text/event-stream; charset=utf-8"),
-        );
-        response
-            .headers_mut()
-            .insert("cache-control", HeaderValue::from_static("no-cache"));
-        response.headers_mut().insert(
-            "x-coconut-served-by",
-            HeaderValue::from_str(&served_by).unwrap_or(HeaderValue::from_static("")),
-        );
-        if fallback {
-            response
-                .headers_mut()
-                .insert("x-coconut-fallback", HeaderValue::from_static("true"));
-        }
-        response
-    } else {
-        let completion = collect_stream(upstream, requested_model, strip_read).await;
-        Json(completion).into_response()
-    }
-}
-
-fn transform_event(
-    mut event: Value,
-    requested: &str,
-    strip_read: bool,
-    suppressed: &mut HashSet<usize>,
-    has_caller_tool_call: &mut bool,
-) -> Value {
-    if event.get("model").is_some() {
-        event["model"] = json!(requested);
-    }
-    if let Some(choices) = event.get_mut("choices").and_then(Value::as_array_mut) {
-        for choice in choices {
-            let mut finish = choice
-                .get("finish_reason")
-                .and_then(Value::as_str)
-                .unwrap_or("")
-                .to_string();
-            if let Some(delta) = choice.get_mut("delta").and_then(Value::as_object_mut) {
-                if let Some(calls) = delta.get_mut("tool_calls").and_then(Value::as_array_mut) {
-                    let mut kept = Vec::new();
-                    for call in calls.iter() {
-                        let index = call.get("index").and_then(Value::as_u64).unwrap_or(0) as usize;
-                        let name = call
-                            .pointer("/function/name")
-                            .and_then(Value::as_str)
-                            .unwrap_or("");
-                        if strip_read && name == "read" {
-                            suppressed.insert(index);
-                            continue;
-                        }
-                        if suppressed.contains(&index) {
-                            continue;
-                        }
-                        *has_caller_tool_call = true;
-                        kept.push(call.clone());
-                    }
-                    if kept.is_empty() {
-                        delta.remove("tool_calls");
-                    } else {
-                        *calls = kept;
-                    }
-                }
-            }
-            if finish == "tool_calls" && !*has_caller_tool_call {
-                choice["finish_reason"] = json!("stop");
-                finish = "stop".to_string();
-            }
-            let _ = finish;
-        }
-    }
-    event
-}
-
-async fn relay_stream(
-    response: reqwest::Response,
-    tx: mpsc::Sender<Result<Bytes, Infallible>>,
-    requested: String,
-    strip_read: bool,
-) {
-    let mut stream = response.bytes_stream();
-    let mut buffer = String::new();
-    let mut suppressed = HashSet::new();
-    let mut has_caller = false;
-
-    let send = |text: String| {
-        let tx = tx.clone();
-        async move {
-            let _ = tx.send(Ok(Bytes::from(text))).await;
-        }
-    };
-
-    while let Some(chunk) = stream.next().await {
-        let Ok(chunk) = chunk else {
-            break;
-        };
-        buffer.push_str(&String::from_utf8_lossy(&chunk));
-        buffer = buffer.replace("\r\n", "\n");
-        while let Some(index) = buffer.find("\n\n") {
-            let block = buffer[..index].to_string();
-            buffer = buffer[index + 2..].to_string();
-            let data = block
-                .lines()
-                .filter_map(|line| line.strip_prefix("data:"))
-                .map(str::trim)
-                .collect::<Vec<_>>()
-                .join("\n");
-            if data.is_empty() {
-                continue;
-            }
-            if data == "[DONE]" {
-                send("data: [DONE]\n\n".into()).await;
-                return;
-            }
-            if let Ok(event) = serde_json::from_str::<Value>(&data) {
-                let event = transform_event(
-                    event,
-                    &requested,
-                    strip_read,
-                    &mut suppressed,
-                    &mut has_caller,
-                );
-                send(format!(
-                    "data: {}\n\n",
-                    serde_json::to_string(&event).unwrap_or_default()
-                ))
-                .await;
-            }
-        }
-    }
-    send("data: [DONE]\n\n".into()).await;
-}
-
-async fn collect_stream(response: reqwest::Response, requested: String, strip_read: bool) -> Value {
-    let mut stream = response.bytes_stream();
-    let mut buffer = String::new();
-    let mut suppressed = HashSet::new();
-    let mut has_caller = false;
-    let mut content = String::new();
-    let mut reasoning = String::new();
-    let mut finish = "stop".to_string();
-    let mut usage = Value::Null;
-    let mut calls: HashMap<usize, Value> = HashMap::new();
-
-    while let Some(chunk) = stream.next().await {
-        let Ok(chunk) = chunk else {
-            break;
-        };
-        buffer.push_str(&String::from_utf8_lossy(&chunk));
-        buffer = buffer.replace("\r\n", "\n");
-        while let Some(index) = buffer.find("\n\n") {
-            let block = buffer[..index].to_string();
-            buffer = buffer[index + 2..].to_string();
-            let data = block
-                .lines()
-                .filter_map(|line| line.strip_prefix("data:"))
-                .map(str::trim)
-                .collect::<Vec<_>>()
-                .join("\n");
-            if data.is_empty() || data == "[DONE]" {
-                continue;
-            }
-            if let Ok(event) = serde_json::from_str::<Value>(&data) {
-                let event = transform_event(
-                    event,
-                    &requested,
-                    strip_read,
-                    &mut suppressed,
-                    &mut has_caller,
-                );
-                if let Some(value) = event.get("usage") {
-                    if !value.is_null() {
-                        usage = value.clone();
-                    }
-                }
-                for choice in event["choices"].as_array().cloned().unwrap_or_default() {
-                    let delta = &choice["delta"];
-                    if let Some(text) = delta["content"].as_str() {
-                        content.push_str(text);
-                    }
-                    if let Some(text) = delta["reasoning_content"].as_str() {
-                        reasoning.push_str(text);
-                    }
-                    for call in delta["tool_calls"].as_array().cloned().unwrap_or_default() {
-                        let index = call["index"].as_u64().unwrap_or(0) as usize;
-                        let entry = calls.entry(index).or_insert_with(|| {
-                            json!({
-                                "id": call["id"].as_str().unwrap_or(""),
-                                "type": "function",
-                                "function": { "name": "", "arguments": "" }
-                            })
-                        });
-                        if let Some(name) = call.pointer("/function/name").and_then(Value::as_str) {
-                            if entry["function"]["name"].as_str().unwrap_or("").is_empty() {
-                                entry["function"]["name"] = json!(name);
-                            }
-                        }
-                        if let Some(args) =
-                            call.pointer("/function/arguments").and_then(Value::as_str)
-                        {
-                            let current = entry["function"]["arguments"].as_str().unwrap_or("");
-                            entry["function"]["arguments"] = json!(format!("{current}{args}"));
-                        }
-                    }
-                    if let Some(reason) = choice["finish_reason"].as_str() {
-                        finish = reason.to_string();
-                    }
-                }
-            }
-        }
-    }
-
-    let mut ordered: Vec<(usize, Value)> = calls.into_iter().collect();
-    ordered.sort_by_key(|(index, _)| *index);
-    let tool_calls: Vec<Value> = ordered.into_iter().map(|(_, value)| value).collect();
-    let message = if tool_calls.is_empty() {
-        json!({ "role": "assistant", "content": content, "reasoning_content": reasoning })
-    } else {
-        json!({ "role": "assistant", "content": Value::Null, "reasoning_content": reasoning, "tool_calls": tool_calls })
-    };
-    json!({
-        "id": format!("chatcmpl-{}", rand::thread_rng().gen::<u64>()),
-        "object": "chat.completion",
-        "created": SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs(),
-        "model": requested,
-        "choices": [{ "index": 0, "message": message, "finish_reason": finish }],
-        "usage": usage
-    })
 }
 
 async fn ws_handler(ws: WebSocketUpgrade, State(state): State<Arc<ServerState>>) -> Response {
@@ -1547,20 +890,6 @@ async fn handle_socket(socket: WebSocket, state: Arc<ServerState>) {
             "ping" => {
                 let _ = tx.send(json!({ "type": "pong" }).to_string());
             }
-            "log" => {
-                let source = value["source"].as_str().unwrap_or("plugins");
-                let limit = value["limit"].as_u64().unwrap_or(400).min(2000) as usize;
-                let lines = state.log_tail(source, limit);
-                let _ = tx.send(
-                    json!({
-                        "type": "log-lines",
-                        "source": source,
-                        "lines": lines,
-                        "at": now_millis(),
-                    })
-                    .to_string(),
-                );
-            }
             "hello" => {
                 let tools: HashSet<String> = value["tools"]
                     .as_array()
@@ -1578,13 +907,16 @@ async fn handle_socket(socket: WebSocket, state: Arc<ServerState>) {
                 *state.page_session.write().await = Some(session.clone());
                 state.log(
                     "ws",
-                    &format!("hello {}（{} 个工具）", session.id, session.tools.lock().await.len()),
+                    &format!(
+                        "hello {}（{} 个工具）",
+                        session.id,
+                        session.tools.lock().await.len()
+                    ),
                 );
                 let state = state.clone();
                 let session = session.clone();
                 let session_id = session.id.clone();
-                let tool_names: Vec<String> =
-                    session.tools.lock().await.iter().cloned().collect();
+                let tool_names: Vec<String> = session.tools.lock().await.iter().cloned().collect();
                 // 只有真正的工具箱页面（有 run_js）才算「页面就绪」：
                 // 沉浸式外壳自己开的那条 WS 也会发 hello，它一触发插件同步就会
                 // 因为「工具箱页面还没打开」白跑一轮。
@@ -1671,8 +1003,7 @@ async fn inject_shell(state: Arc<ServerState>, session: Arc<WsSession>) -> bool 
                 .and_then(Value::as_str)
                 .unwrap_or("ok")
                 .to_string();
-            state
-                .log("shell", &format!("沉浸式外壳注入完成：{detail}"));
+            state.log("shell", &format!("沉浸式外壳注入完成：{detail}"));
             true
         }
         Err(error) => {
@@ -1698,24 +1029,6 @@ async fn apply_theme(state: &Arc<ServerState>, session: &Arc<WsSession>) {
                 Duration::from_secs(10),
             )
             .await;
-    }
-}
-
-async fn refresh_models(state: Arc<ServerState>) {
-    let mut previous = state.model_ids(false).await;
-    loop {
-        // 一天刷新一次；列表为空（抓取失败）时每 10 分钟重试。
-        let wait = if previous.is_empty() {
-            MODELS_RETRY
-        } else {
-            MODELS_TTL
-        };
-        tokio::time::sleep(wait).await;
-        let next = state.model_ids(true).await;
-        if !next.is_empty() && next != previous {
-            previous = next;
-            state.ws.sync_all(state.clone()).await;
-        }
     }
 }
 
@@ -1770,7 +1083,7 @@ fn now_millis() -> u64 {
 /// 插件线程是普通线程，不能借用启动器 / Tauri 的 runtime：那边是 current_thread
 /// 或者拿不到 IO 驱动，future 一用到计时器就会 panic「there is no reactor running」。
 /// 自己养一个 2 线程的 runtime，任务和连接都落在它上面。
-fn bridge_runtime() -> &'static tokio::runtime::Runtime {
+pub(crate) fn bridge_runtime() -> &'static tokio::runtime::Runtime {
     static RUNTIME: std::sync::OnceLock<tokio::runtime::Runtime> = std::sync::OnceLock::new();
     RUNTIME.get_or_init(|| {
         tokio::runtime::Builder::new_multi_thread()
@@ -1783,7 +1096,7 @@ fn bridge_runtime() -> &'static tokio::runtime::Runtime {
 }
 
 /// 在普通线程上阻塞等待一个 tokio future（future 必须在 runtime 内部创建）。
-fn bridge_block_on<F, Fut>(build: F) -> Fut::Output
+pub(crate) fn bridge_block_on<F, Fut>(build: F) -> Fut::Output
 where
     F: FnOnce() -> Fut,
     Fut: std::future::Future,
@@ -1797,6 +1110,7 @@ where
 /// 插件宿主：把插件要的能力接到现有的 WS / reqwest / 磁盘上。
 struct ServerBridge {
     state: std::sync::Weak<ServerState>,
+    servers: Arc<crate::plugin_server::PluginServers>,
 }
 
 impl ServerBridge {
@@ -1898,11 +1212,20 @@ fn run_js_value(
 impl PluginBridge for ServerBridge {
     fn log(&self, plugin: &str, level: &str, message: &str) {
         if let Ok(state) = self.state() {
-            state
-                .log(&format!("plugin:{plugin}"), &format!("[{level}] {message}"));
-            state
-                .plugins
-                .push_log(format!("[{plugin}] {message}"));
+            state.log(&format!("plugin:{plugin}"), &format!("[{level}] {message}"));
+            state.plugins.push_log(format!("[{plugin}] {message}"));
+        }
+    }
+
+    fn console_write(&self, plugin: &str, level: &str, message: &str) {
+        if let Ok(state) = self.state() {
+            state.console.push(plugin, level, message);
+        }
+    }
+
+    fn console_clear(&self) {
+        if let Ok(state) = self.state() {
+            state.console.clear();
         }
     }
 
@@ -1928,13 +1251,16 @@ impl PluginBridge for ServerBridge {
     fn fetch(&self, _plugin: &str, url: &str, opts: &str) -> Result<String, String> {
         let state = self.state()?;
         let opts = serde_json::from_str::<Value>(opts).unwrap_or_else(|_| json!({}));
-        let method = opts["method"].as_str().unwrap_or("GET").to_ascii_uppercase();
+        let method = opts["method"]
+            .as_str()
+            .unwrap_or("GET")
+            .to_ascii_uppercase();
         let method = reqwest::Method::from_bytes(method.as_bytes())
             .map_err(|_| format!("非法的 HTTP 方法：{method}"))?;
         let mut request = state
             .client
             .request(method, url)
-            .timeout(Duration::from_secs(30));
+            .timeout(Duration::from_secs(120));
         if let Some(headers) = opts["headers"].as_object() {
             for (key, value) in headers {
                 if let Some(value) = value.as_str() {
@@ -1949,8 +1275,8 @@ impl PluginBridge for ServerBridge {
                 request = request.json(value);
             }
         }
-        let response = bridge_block_on(|| request.send())
-            .map_err(|error| format!("请求失败：{error}"))?;
+        let response =
+            bridge_block_on(|| request.send()).map_err(|error| format!("请求失败：{error}"))?;
         let status = response.status().as_u16();
         let ok = response.status().is_success();
         let headers: serde_json::Map<String, Value> = response
@@ -1986,7 +1312,11 @@ impl PluginBridge for ServerBridge {
         let value = run_js_value(self, &state, &script)?;
         let id = value
             .as_u64()
-            .or_else(|| value.as_str().and_then(|raw| raw.trim().parse::<u64>().ok()))
+            .or_else(|| {
+                value
+                    .as_str()
+                    .and_then(|raw| raw.trim().parse::<u64>().ok())
+            })
             .ok_or_else(|| "浮层注册失败：工具箱页面没有返回 id".to_string())?;
         Ok(id as u32)
     }
@@ -2094,9 +1424,65 @@ impl PluginBridge for ServerBridge {
         let state = self.state()?;
         Ok(state.plugins.storage_all(plugin))
     }
+
+    fn server_listen(&self, plugin: &str, host: &str, port: u16) -> Result<Value, String> {
+        self.servers.listen(plugin, host, port)
+    }
+
+    fn server_close(&self, plugin: &str, id: u64) -> Result<(), String> {
+        self.servers.close(plugin, id)
+    }
+
+    fn server_close_all(&self, plugin: &str) {
+        self.servers.close_all(plugin);
+    }
+
+    fn server_respond(
+        &self,
+        plugin: &str,
+        request: u64,
+        status: u16,
+        headers: &str,
+        body: &str,
+        end: bool,
+    ) -> Result<bool, String> {
+        self.servers
+            .respond(plugin, request, status, headers, body, end)
+    }
+
+    fn server_ws_send(
+        &self,
+        plugin: &str,
+        server: u64,
+        connection: u64,
+        text: &str,
+    ) -> Result<bool, String> {
+        self.servers.ws_send(plugin, server, connection, text)
+    }
+
+    fn server_ws_close(&self, plugin: &str, server: u64, connection: u64) -> Result<bool, String> {
+        self.servers.ws_close(plugin, server, connection)
+    }
+
+    fn ws_client_connect(&self, plugin: &str, url: &str) -> Result<Value, String> {
+        self.servers.client_connect(plugin, url)
+    }
+
+    fn ws_client_send(&self, plugin: &str, id: u64, text: &str) -> Result<bool, String> {
+        self.servers.client_send(plugin, id, text)
+    }
+
+    fn ws_client_close(&self, plugin: &str, id: u64) -> Result<bool, String> {
+        self.servers.client_close(plugin, id)
+    }
+
+    fn poll_events(&self, plugin: &str) -> Result<String, String> {
+        Ok(self.servers.poll(plugin))
+    }
 }
 
-pub async fn check_game_update(state: &ServerState) -> Result<Value, String> {    let lang = state.lang().await;
+pub async fn check_game_update(state: &ServerState) -> Result<Value, String> {
+    let lang = state.lang().await;
     state
         .set_progress(tr!(
             lang,
@@ -2250,9 +1636,7 @@ async fn fetch_entity_paths(
     if total == 0 {
         return;
     }
-    state
-        .set_progress(format!("{label} 0/{total}…"))
-        .await;
+    state.set_progress(format!("{label} 0/{total}…")).await;
     let done = Arc::new(AtomicUsize::new(0));
     let jobs = paths.iter().cloned().map(|path| {
         let client = state.client.clone();
@@ -2313,7 +1697,10 @@ async fn ensure_icon(state: &Arc<ServerState>, url: &str) -> Result<String, Stri
     let name = format!("{}.webp", hash_url(url));
     let path = state.icons_dir.join(&name);
     let local = format!("http://127.0.0.1:{TOOLBOX_PORT}/icons/{name}");
-    if std::fs::metadata(&path).map(|meta| meta.len() > 0).unwrap_or(false) {
+    if std::fs::metadata(&path)
+        .map(|meta| meta.len() > 0)
+        .unwrap_or(false)
+    {
         return Ok(local);
     }
     let response = state
@@ -2331,7 +1718,8 @@ async fn ensure_icon(state: &Arc<ServerState>, url: &str) -> Result<String, Stri
         .await
         .map_err(|error| format!("读取图标失败：{error}"))?;
     let webp = transcode_webp(&bytes)?;
-    std::fs::create_dir_all(&state.icons_dir).map_err(|error| format!("创建图标目录失败：{error}"))?;
+    std::fs::create_dir_all(&state.icons_dir)
+        .map_err(|error| format!("创建图标目录失败：{error}"))?;
     let tmp = path.with_extension("webp.tmp");
     std::fs::write(&tmp, &webp).map_err(|error| format!("写入图标失败：{error}"))?;
     std::fs::rename(&tmp, &path).map_err(|error| format!("替换图标失败：{error}"))?;
@@ -2372,7 +1760,10 @@ async fn localize_icons(state: &Arc<ServerState>, value: &Value) -> Value {
             let local = match ensure_icon(&state, &url).await {
                 Ok(path) => path,
                 Err(error) => {
-                    state.log("icons", &format!("图标本地化失败：{url}（{error}），保留远程地址"));
+                    state.log(
+                        "icons",
+                        &format!("图标本地化失败：{url}（{error}），保留远程地址"),
+                    );
                     url.clone()
                 }
             };
@@ -2502,14 +1893,7 @@ async fn update_game_data_inner(state: &Arc<ServerState>) -> Result<Value, Strin
         state
             .set_progress(format!(
                 "{} {} → {}（{}）…",
-                tr!(
-                    lang,
-                    "版本",
-                    "版本",
-                    "バージョン",
-                    "버전",
-                    "Version"
-                ),
+                tr!(lang, "版本", "版本", "バージョン", "버전", "Version"),
                 cache.version,
                 version,
                 jobs.len()
@@ -2557,11 +1941,31 @@ async fn update_game_data_inner(state: &Arc<ServerState>) -> Result<Value, Strin
             ),
             tr!(
                 lang,
-                if mode == "incremental" { "增量" } else { "全量" },
-                if mode == "incremental" { "增量" } else { "全量" },
-                if mode == "incremental" { "差分" } else { "全件" },
-                if mode == "incremental" { "증분" } else { "전체" },
-                if mode == "incremental" { "incremental" } else { "full" }
+                if mode == "incremental" {
+                    "增量"
+                } else {
+                    "全量"
+                },
+                if mode == "incremental" {
+                    "增量"
+                } else {
+                    "全量"
+                },
+                if mode == "incremental" {
+                    "差分"
+                } else {
+                    "全件"
+                },
+                if mode == "incremental" {
+                    "증분"
+                } else {
+                    "전체"
+                },
+                if mode == "incremental" {
+                    "incremental"
+                } else {
+                    "full"
+                }
             ),
             jobs.len(),
             data.entries.len()
@@ -2691,8 +2095,7 @@ async fn fetch_manifest(state: &Arc<ServerState>, quiet: bool) -> Result<Bytes, 
                     continue 'rounds;
                 }
                 Err(error) => {
-                    state
-                        .log("update", &format!("{label} 读取清单失败：{error}"));
+                    state.log("update", &format!("{label} 读取清单失败：{error}"));
                     let item = format!("{label}：{error}");
                     if !failures.contains(&item) {
                         failures.push(item);
@@ -2886,7 +2289,10 @@ async fn download_toolbox_archive(state: &Arc<ServerState>) -> Result<Bytes, Str
                 }
                 Err(error) => {
                     state.log("update", &format!("{label} 下载失败：{error}"));
-                    if !failures.iter().any(|item| item == &format!("{label}：{error}")) {
+                    if !failures
+                        .iter()
+                        .any(|item| item == &format!("{label}：{error}"))
+                    {
                         failures.push(format!("{label}：{error}"));
                     }
                     if step + 1 < sources.len() {
@@ -2958,7 +2364,8 @@ pub fn extract_static_archive(bytes: &[u8], target: &std::path::Path) -> Result<
             continue;
         };
         if let Some(parent) = target.join(&relative).parent() {
-            std::fs::create_dir_all(parent).map_err(|error| format!("创建解压目录失败：{error}"))?;
+            std::fs::create_dir_all(parent)
+                .map_err(|error| format!("创建解压目录失败：{error}"))?;
         }
         entry
             .unpack(target.join(relative))
@@ -2982,8 +2389,10 @@ pub async fn auto_update_toolbox(state: &Arc<ServerState>) -> Result<Option<Stri
     }
     let local = state.commit.read().await.clone();
     if local == remote {
-        state
-            .log("update", &format!("启动时检查工具箱版本：已是最新 · {local}"));
+        state.log(
+            "update",
+            &format!("启动时检查工具箱版本：已是最新 · {local}"),
+        );
         return Ok(None);
     }
     let lang = state.lang().await;
@@ -3133,7 +2542,7 @@ async fn update_toolbox_inner(state: &Arc<ServerState>) -> Result<Value, String>
 
 pub async fn start(static_dir: PathBuf, data_dir: PathBuf) -> Result<Arc<ServerState>, String> {
     let client = reqwest::Client::builder()
-        .user_agent(USER_AGENT)
+        .user_agent("coconut-app/0.1.1")
         .timeout(Duration::from_secs(180))
         .build()
         .map_err(|error| error.to_string())?;
@@ -3145,20 +2554,17 @@ pub async fn start(static_dir: PathBuf, data_dir: PathBuf) -> Result<Arc<ServerS
     let commit = manifest["commit"].as_str().unwrap_or("").to_string();
     let build = manifest["builtAt"].as_str().unwrap_or("").to_string();
     let game_file = data_dir.join("game-data.json");
-    let models_file = data_dir.join("free-models.json");
-    let key_file = data_dir.join("opencode-key.json");
     let icons_dir = data_dir.join("icons");
     let settings_file = data_dir.join("settings.json");
     let settings = read_settings(&settings_file);
     let language = Lang::from_tag(&settings.language);
-    let theme = if settings.theme == "dark" { "dark" } else { "light" };
+    let theme = if settings.theme == "dark" {
+        "dark"
+    } else {
+        "light"
+    };
     let plugins = Plugins::new(&data_dir);
     let (frames, _) = tokio::sync::broadcast::channel::<Value>(512);
-    let api_key = std::fs::read_to_string(&key_file)
-        .ok()
-        .and_then(|text| serde_json::from_str::<Value>(&text).ok())
-        .and_then(|value| value["key"].as_str().map(str::to_string))
-        .unwrap_or_default();
     let game = std::fs::read_to_string(&game_file)
         .ok()
         .and_then(|text| serde_json::from_str::<GameData>(&text).ok())
@@ -3171,18 +2577,12 @@ pub async fn start(static_dir: PathBuf, data_dir: PathBuf) -> Result<Arc<ServerS
         icons_dir,
         game: RwLock::new(game),
         client,
-        models: RwLock::new(Vec::new()),
-        models_at: RwLock::new(None),
-        models_file,
-        api_key: RwLock::new(api_key),
-        key_file,
         mirror_index: AtomicUsize::new(0),
         mirror_gen: AtomicUsize::new(0),
         theme: RwLock::new(theme.to_string()),
         commit: RwLock::new(commit),
         build: RwLock::new(build),
         progress: RwLock::new(String::new()),
-        url: format!("http://127.0.0.1:{TOOLBOX_PORT}"),
         ready: AtomicBool::new(false),
         error: RwLock::new(String::new()),
         ws: WsHub::new(),
@@ -3192,6 +2592,7 @@ pub async fn start(static_dir: PathBuf, data_dir: PathBuf) -> Result<Arc<ServerS
         workshop_target: RwLock::new(None),
         updating: AtomicBool::new(false),
         plugins,
+        console: crate::console_bus::ConsoleBus::default(),
         lang: RwLock::new(language),
         frames: frames.clone(),
         page_session: RwLock::new(None),
@@ -3200,8 +2601,7 @@ pub async fn start(static_dir: PathBuf, data_dir: PathBuf) -> Result<Arc<ServerS
     let serve_dir =
         ServeDir::new(&static_dir).not_found_service(ServeFile::new(static_dir.join("200.html")));
     let app = Router::new()
-        .route("/v1/models", get(models_handler))
-        .route("/v1/chat/completions", post(chat_handler))
+        .route("/debug/console", get(console_handler))
         .route("/api/{*path}", any(api_proxy))
         // `/icons/*` 同时承载「本地化的游戏图标」和「工具箱自带的静态图标」，
         // 必须走同一个处理器：直接 nest 游戏图标目录会把工具箱的 icons/ 整个遮蔽。
@@ -3262,6 +2662,7 @@ pub async fn start(static_dir: PathBuf, data_dir: PathBuf) -> Result<Arc<ServerS
     {
         let bridge = Arc::new(ServerBridge {
             state: Arc::downgrade(&state),
+            servers: Arc::new(crate::plugin_server::PluginServers::new()),
         });
         state.plugins.attach_bridge(bridge);
         state.plugins.start_all();
@@ -3281,89 +2682,12 @@ pub async fn start(static_dir: PathBuf, data_dir: PathBuf) -> Result<Arc<ServerS
         });
     }
 
-    let init_state = state.clone();
-    tokio::spawn(async move {
-        // 命中磁盘缓存时不会请求上游：一天只拉一次。
-        let ids = init_state.model_ids(false).await;
-        if !ids.is_empty() {
-            // 模型列表就绪：让插件（免费模型）重新同步一次，
-            // 否则第一次 hello 常常赶在列表拉回来之前，只能空跑。
-            init_state
-                .plugins
-                .event(json!({ "type": "resync", "models": ids }));
-        }
-    });
-    tokio::spawn(refresh_models(state.clone()));
-
     Ok(state)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn public_ids_hide_free_suffix_and_drop_big_pickle() {
-        assert_eq!(public_model_id("beam-free").as_deref(), Some("beam"));
-        assert_eq!(
-            public_model_id("deepseek-v4.1-flash-free").as_deref(),
-            Some("deepseek-v4.1-flash")
-        );
-        assert_eq!(public_model_id("big-pickle"), None);
-        assert_eq!(public_model_id("test"), None);
-        assert_eq!(public_model_id("-free"), None);
-        assert_eq!(upstream_model_id("beam"), "beam-free");
-    }
-
-    #[test]
-    fn extract_public_models_filters_sorts_and_dedups() {
-        let payload = json!({
-            "data": [
-                { "id": "big-pickle" },
-                { "id": "beam-free" },
-                { "id": "jev-1.13-free" },
-                { "id": "glm-5.3-flash-free" },
-                { "id": "claude-opus-5" },
-                { "id": "beam-free" }
-            ]
-        });
-        assert_eq!(
-            extract_public_models(&payload),
-            vec!["beam".to_string(), "glm-5.3-flash".to_string()]
-        );
-    }
-
-    #[test]
-    fn api_key_format_rules() {
-        assert!(!looks_like_api_key(""));
-        assert!(!looks_like_api_key("public"));
-        assert!(!looks_like_api_key("undefined"));
-        assert!(!looks_like_api_key("short"));
-        assert!(!looks_like_api_key("has space here"));
-        assert!(looks_like_api_key("sk-abcdef123456"));
-        assert!(looks_like_api_key("oc_live.9f3a~Z+/="));
-    }
-
-    #[test]
-    fn bearer_prefix_is_stripped() {
-        assert_eq!(strip_bearer("Bearer sk-abcdef123456"), "sk-abcdef123456");
-        assert_eq!(strip_bearer("bearer sk-abcdef123456"), "sk-abcdef123456");
-        assert_eq!(strip_bearer("  sk-abcdef123456  "), "sk-abcdef123456");
-        assert_eq!(strip_bearer("Bearer public"), "public");
-        assert_eq!(strip_bearer(""), "");
-    }
-
-    #[test]
-    fn models_cache_roundtrip() {
-        let path = std::env::temp_dir().join("coconut-models-test.json");
-        let ids = vec!["beam".to_string(), "glm-5.3-flash".to_string()];
-        write_models_cache(&path, &ids);
-        let (cached, stamp) = read_models_cache(&path).expect("cache should round-trip");
-        assert_eq!(cached, ids);
-        let age = SystemTime::now().duration_since(stamp).unwrap_or_default();
-        assert!(age.as_secs() < 5);
-        let _ = std::fs::remove_file(path);
-    }
 
     #[test]
     fn mirror_rotation_wraps_to_first_source() {
@@ -3394,19 +2718,32 @@ mod tests {
         );
         let paths = entity_paths(&entries);
         assert_eq!(paths.len(), 4);
-        assert!(paths.iter().any(|path| path.starts_with("/api/v1/info/character/")));
-        assert!(paths.iter().any(|path| path.starts_with("/api/v2/info/character/")));
-        assert!(paths.iter().any(|path| path.starts_with("/api/v3/info/character/")));
-        assert!(paths.iter().any(|path| path.starts_with("/api/v1/recommend-weapon/")));
+        assert!(paths
+            .iter()
+            .any(|path| path.starts_with("/api/v1/info/character/")));
+        assert!(paths
+            .iter()
+            .any(|path| path.starts_with("/api/v2/info/character/")));
+        assert!(paths
+            .iter()
+            .any(|path| path.starts_with("/api/v3/info/character/")));
+        assert!(paths
+            .iter()
+            .any(|path| path.starts_with("/api/v1/recommend-weapon/")));
     }
 
     #[test]
     fn icon_hash_is_stable() {
-        assert_eq!(hash_url("https://static/a.webp"), hash_url("https://static/a.webp"));
-        assert_ne!(hash_url("https://static/a.webp"), hash_url("https://static/b.webp"));
+        assert_eq!(
+            hash_url("https://static/a.webp"),
+            hash_url("https://static/a.webp")
+        );
+        assert_ne!(
+            hash_url("https://static/a.webp"),
+            hash_url("https://static/b.webp")
+        );
         assert_eq!(hash_url("x").len(), 16);
     }
-
 
     #[test]
     fn archive_paths_handle_both_layouts() {
@@ -3438,7 +2775,8 @@ mod tests {
         std::fs::create_dir_all(source.join("_app")).expect("mkdir");
         std::fs::write(source.join("index.html"), b"<html></html>").expect("write html");
         std::fs::write(source.join("_app/app.js"), b"console.log(1)").expect("write js");
-        std::fs::write(source.join("manifest.json"), b"{\"commit\":\"abc\"}").expect("write manifest");
+        std::fs::write(source.join("manifest.json"), b"{\"commit\":\"abc\"}")
+            .expect("write manifest");
 
         let mut archive = Vec::new();
         {
@@ -3460,9 +2798,6 @@ mod tests {
 
         let _ = std::fs::remove_dir_all(&root);
     }
-
-
-
 
     #[test]
     fn static_cache_policy_keeps_html_fresh() {
@@ -3569,18 +2904,12 @@ mod tests {
             icons_dir: icons.clone(),
             game: RwLock::new(GameData::default()),
             client: reqwest::Client::new(),
-            models: RwLock::new(Vec::new()),
-            models_at: RwLock::new(None),
-            models_file: root.join("free-models.json"),
-            api_key: RwLock::new(String::new()),
-            key_file: root.join("opencode-key.json"),
             mirror_index: AtomicUsize::new(0),
             mirror_gen: AtomicUsize::new(0),
             theme: RwLock::new("light".into()),
             commit: RwLock::new(String::new()),
             build: RwLock::new(String::new()),
             progress: RwLock::new(String::new()),
-            url: String::new(),
             ready: AtomicBool::new(true),
             error: RwLock::new(String::new()),
             ws: WsHub::new(),
@@ -3590,6 +2919,7 @@ mod tests {
             workshop_target: RwLock::new(None),
             updating: AtomicBool::new(false),
             plugins: Plugins::new(&root),
+            console: crate::console_bus::ConsoleBus::default(),
             lang: RwLock::new(Lang::En),
             frames: tokio::sync::broadcast::channel(8).0,
             page_session: RwLock::new(None),

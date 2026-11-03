@@ -86,8 +86,8 @@ async function buildOne(name) {
 fs.mkdirSync(outDir, { recursive: true });
 const names = entryDirs();
 if (!names.length) {
-  console.error(only ? `找不到内置脚本：${only}` : 'builtin/ 下没有可打包的脚本');
-  process.exit(1);
+  console.log('builtin/ 下没有可打包的脚本，跳过（免费模型已迁到 SDK 示例）');
+  process.exit(0);
 }
 console.log(`打包 ${names.length} 个内置脚本：`);
 for (const name of names) await buildOne(name);

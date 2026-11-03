@@ -1,11 +1,11 @@
 # 椰果工具箱启动器 · coconut-app
 
-Tauri 桌面启动器：本地打开椰果工具箱，并自动接管 AI 助手与免费模型配置。
+Tauri 桌面启动器：本地打开椰果工具箱，并自动接管 AI 助手配置。
 
 现在**运行时不再依赖 Node、git、pnpm**：
 
 - 工具箱静态产物由 <code>adapter-static</code> 构建；
-- Tauri 的 Rust 进程直接启动静态文件服务、API 反向代理、免费模型代理和 WebSocket 接管服务；
+- Tauri 的 Rust 进程直接启动静态文件服务、API 反向代理和 WebSocket 接管服务；
 - 只有构建工具箱静态产物时才需要 Node/pnpm，打包后的启动器不需要它们。
 
 ## 相关仓库
@@ -29,7 +29,6 @@ Tauri 桌面启动器：本地打开椰果工具箱，并自动接管 AI 助手�
 │  ┌─ 47821 ──────────────────────┐  │
 │  │ 工具箱静态文件                 │  │
 │  │ /api/* -> 官方 API 反向代理     │  │
-│  │ /v1/*  -> 免费模型代理          │  │
 │  └───────────────────────────────┘  │
 │  ┌─ 8765 ───────────────────────┐  │
 │  │ WS 接管 / 插件宿主 / 浮层宿主   │  │
@@ -45,7 +44,6 @@ Tauri 桌面启动器：本地打开椰果工具箱，并自动接管 AI 助手�
 
 - 静态文件服务
 - SvelteKit <code>/api/*</code> 反向代理
-- OpenAI 兼容免费模型代理
 - WebSocket 接管
 - AI 配置文件同步、主题透传、默认配置清理
 - 窗口卸载 / 浏览器数据清理
@@ -127,7 +125,7 @@ builtAt  2026-10-20T14:19:35.190Z
   点击后显示「已切换」并禁用，1 秒后恢复；镜像按 直连 → 镜像 1 → 镜像 2 → 直连 轮换。
 - **右下角**两个按钮：「插件」+「卸载并删除本地数据」。
   - 「插件」打开插件弹窗（列表 / 启停 / 重载 / 打开目录 / 重新扫描），
-    见「插件」一节；免费模型现在是内置插件，开关就在那个弹窗里；
+    见「插件」一节；免费模型是 SDK 示例插件，开关也在那个弹窗里；
   - 有插件报错时「插件」按钮的小圆点变红，全部停用时变灰；
   - 卸载按钮点击后弹出分步卸载弹窗。
 - 跟随系统昼夜主题，并通过 WS 把 <code>theme_mode</code> 透传到工具箱。
@@ -148,7 +146,7 @@ builtAt  2026-10-20T14:19:35.190Z
 
 | 端口 | 用途 |
 | --- | --- |
-| 47821 | 工具箱 + API 代理 + 免费模型代理 + <code>/icons</code> |
+| 47821 | 工具箱 + API 代理 + `/icons` |
 | 8765 | WS 接管 |
 | 47822 | 椰果工坊同站反代（见「工坊反代」） |
 
@@ -412,8 +410,6 @@ WebView2 数据位于：
 ~~~text
 %APPDATA%\com.coconut.launcher\
   game-data.json           本地游戏数据缓存
-  free-models.json         免费模型列表缓存（含 fetchedAt，24 小时有效）
-  opencode-key.json        用户填的 opencode API Key
   settings.json            启动器自己的开关（language / theme）
   toolbox-static\          工具箱静态产物（自动更新会替换这里）
   icons\                   本地化后的游戏图标（webp）
@@ -433,20 +429,23 @@ WebView2 数据位于：
 
 - <code>language</code>：启动页语言（<code>zh-Hans</code> / <code>zh-Hant</code> / <code>ja</code> / <code>ko</code> / <code>en</code>，旧的 <code>zh-CN</code> / <code>zh-TW</code> 仍识别）；
 - <code>theme</code>：昼夜主题（<code>light</code> / <code>dark</code>），空串表示还没选过；
-- 免费模型的启用状态、以及「是否已写过一次」都挪进了插件体系
+- 免费模型的启用状态、以及「是否已写过一次」都在插件体系里
   （<code>plugins/state.json</code> 与 <code>plugins/storage/free-models.json</code>）。
 
 右下角「卸载并删除本地数据」会打开分步弹窗，逐步显示并执行：
 
-1. **停止本地服务** —— 断开 WS 接管，停止静态服务与 API / 模型代理；
+1. **停止本地服务** —— 断开 WS 接管，停止静态服务与 API 代理；
 2. **清除浏览器存储** —— localStorage / IndexedDB / Service Worker；
 3. **删除工具箱静态文件** —— <code>toolbox-static</code>；
 4. **删除游戏数据缓存** —— <code>game-data.json</code>；
-5. **删除免费模型缓存与 API Key** —— <code>free-models.json</code> / <code>opencode-key.json</code>；
+5. **清理旧版免费模型缓存** —— 删除遗留的 <code>free-models.json</code> / <code>opencode-key.json</code>；
 6. **删除 WebView2 用户数据** —— <code>%LOCALAPPDATA%</code> 下的缓存 / Cookie /
    Local Storage / IndexedDB / Crashpad；
-7. **退出启动器** —— 清理完成后**不会立刻退出**：弹窗显示剩余时间与「退出启动器」
-   按钮，点按钮立即退出；不理它则静默等待 **5 分钟**后自动退出。
+7. **退出启动器 / 手动卸载** —— 清理完成后不会立刻退出：
+   - 便携版：显示剩余时间与「退出启动器」按钮，点按钮立即退出；不理它则静默等待 **5 分钟**后自动退出；
+   - MSI 安装版：启动器检测到当前目录有 <code>uninstall.exe</code> 时，按钮改为
+     「打开安装目录」，并提示用户手动运行 <code>uninstall.exe</code> 完成系统卸载；
+     不会自动退出，旁边仍提供「退出启动器」。
    退出时才挂上脱离父进程的 Powershell 清理任务，等 WebView2 释放
    <code>lockfile</code> 后再重试删除，最多 30 秒。
 
@@ -454,8 +453,8 @@ WebView2 数据位于：
 
 > WebView2 在进程运行期间会锁住 <code>EBWebView</code>，所以真正的彻底删除只能在
 > 退出之后完成；任务管理器里若残留 <code>msedgewebview2.exe</code>，清理任务会等到
-> 它们退出为止。安装版（MSI）卸载还需要走系统「应用和功能」，启动器内按钮只负责
-> 清理本地数据。
+> 它们退出为止。安装版（MSI）卸载还需要走系统「应用和功能」或手动运行安装目录里的
+> <code>uninstall.exe</code>，启动器内按钮只负责清理本地数据并打开该目录。
 
 > 工具键盘数据、工程数据、AI 配置都保存在浏览器 IndexedDB / localStorage 中，卸载不可恢复。
 
@@ -463,10 +462,10 @@ WebView2 数据位于：
 
 ## 插件
 
-内置插件（免费模型、翻译）和用户插件走同一套 API，源码在 `builtin/` 下，
-用 esbuild 打包成单文件后编进 exe。插件系统在启动器进程内用
-[rquickjs](https://github.com/DelSkayn/rquickjs)（QuickJS）跑 JS，插件通过
-<code>Coconut.runJs</code> / <code>Coconut.callTool</code> 操作工具箱页面。
+内置插件和用户插件走同一套 API。内置插件源码用 `include_str!` 编进 exe，启动时**导出到插件目录**，
+之后只从插件目录加载：用户改过 / 删过都以目录里的文件为准，只有文件缺失时才重新导出。
+插件系统在启动器进程内用 [rquickjs](https://github.com/DelSkayn/rquickjs)（QuickJS）跑 JS，
+插件通过 <code>Coconut.runJs</code> / <code>Coconut.callTool</code> 操作工具箱页面。
 
 ### 放哪、长什么样
 
@@ -525,6 +524,7 @@ async function onHello() {
 | <code>network</code> | <code>Coconut.fetch</code> | 走启动器 reqwest 发 HTTP，不限域名 |
 | <code>storage</code> | <code>Coconut.storage</code> | 插件私有 KV，落盘在 <code>plugins/storage/&lt;id&gt;.json</code> |
 | <code>ui</code> | <code>Coconut.ui</code> | 浮层（注册 / 显隐 / 移除）+ 页面 CSS 注入（需要同时有 <code>dom</code>） |
+| <code>server</code> | <code>Coconut.http</code> | 开本地 HTTP / WebSocket 服务（事件对象） |
 | <code>debug</code> | <code>onEvent</code> 里的原始帧 | 只读订阅 WS 收发帧（调试用） |
 
 权限在 Rust 侧强制：没声明的 API 直接抛错，不是靠文档约束。启动页「插件」弹窗里
@@ -544,9 +544,12 @@ async function onHello() {
 
 ~~~js
 Coconut.plugin            // { id, name, version, mount, permissions }
+Coconut.addEventListener('hello', handler) / removeEventListener
 Coconut.runJs(code)       // 代码是「函数体」（工具箱自己会包 async IIFE，别再套 IIFE）
 Coconut.callTool(name, args)
 Coconut.fetch(url, { method, headers, body | json })
+Coconut.http.createServer({ host, port })  // 事件对象：request / connection
+Coconut.webSocket(url)    // 事件对象：open / message / close
 Coconut.storage.get(key, fallback) / .set(key, value) / .delete(key) / .all()
 Coconut.ui.overlay({ html, css })  // → 浮层 id（引擎分配 z-index，后注册的在上）
 Coconut.ui.visible(id, true|false) / .show(id) / .hide(id) / .remove(id)
@@ -554,7 +557,7 @@ Coconut.ui.injectCss(id, css)
 Coconut.launcher                  // { lang, toolboxVersion, gameVersion }
 Coconut.src.toolbox / .static     // { dir（本地路径）, url（本地服务地址） }
 Coconut.sleep(ms)                 // await Coconut.sleep(500)
-Coconut.log(...args)      // 写到 logs\plugins.log；工具箱里 Ctrl+T 可以看（只读）
+Coconut.log(...args)      // 写到 logs\plugins.log；console.* 只进内置调试终端
 Coconut.setTimeout / Coconut.setInterval / Coconut.clearTimeout / Coconut.clearInterval
 ~~~
 
@@ -570,94 +573,29 @@ Coconut.setTimeout / Coconut.setInterval / Coconut.clearTimeout / Coconut.clearI
 
 - 标题栏：插件数 + 启用数（有报错转红），滚动时固定在顶部；右侧是打开目录 / 重新扫描；
 - 工具条：按名称 / id / 描述 / 权限搜索，按「全部 / 已启用 / 已停用 / 异常」筛选（带数量），
-  一键全部启用 / 停用；
+  一键全部启用 / 停用；「清理死数据」会删除目录里已经不存在的插件留下的
+  <code>state.json</code> 条目与 <code>storage/&lt;id&gt;.json</code>；
 - 每行：状态点 + 名称 / 版本 / 徽标 + 描述 + 权限标签 + 错误信息（悬停看全），
   右侧是启用开关与重载；
-- **启动器里不提供删除**（手动进插件目录删；内置插件没有文件，只能停用）；
-  日志在工具箱里按 `Ctrl+T` 看，弹窗内没有日志入口；
-- 免费模型的开关就是内置插件「免费模型」的启用状态。
+- **启动器里不提供删除**（手动进插件目录删；内置插件也导出成文件，删掉后下次启动会重新导出）；
+  日志在 `logs/plugins.log`，弹窗内没有日志入口；`Ctrl+T` 是调试终端，`console.*` 只进终端。
+- 插件「免费模型」的开关就是它的启用状态（来自 SDK `examples/free-models`，不再内置）。
 
-### 内置插件：免费模型 / 翻译
+### 内置插件：调试终端
 
 ```text
 builtin/
-  free-models/index.js     免费模型
-  translate/               页面翻译（config / packs / ui / cache / inject 多文件）
-out/                       产物（不入库）
+  debug-terminal.js        可读写调试终端源码（启动时导出到 plugins/）
 ```
 
-`npm run builtin` 打包，`npm run tauri:build` 会自动先跑一次。
+- 首次启动导出到 `plugins/debug-terminal.js`，之后以插件目录文件为准；用户可改 / 可删（删了下次启动会再导出）。
+- `Ctrl+T` / `Ctrl+\`` 开关，`Esc` 关闭。
+- 输入框支持插件层与 DOM 层 JS，`Tab` 切换层级；括号闭合回车运行，括号未闭合回车换行。
+- `console.*` 只进终端，`console.clear()` 清空终端；只有 `Coconut.log` 写 `logs/plugins.log`。
+- 终端通过启动器内部 `/debug/console` 轮询 console 环形缓冲，不新增公开插件 API。
 
-- **免费模型**：把启动器免费模型代理里的模型同步成工具箱的 AI 配置；
-- **翻译**：按启动器语言把界面翻译成对应语言，游戏数据按 id 从
-  `https://static.nanoka.cc/ww/<版本>/` 取译文，首次用到某语言（或游戏版本变化）时
-  拉取一次并缓存进 `plugins/storage/translate.json`，之后零请求。
-
-### 内置插件：免费模型的实现
-
-<code>builtin/free-models/index.js</code>（esbuild 打包成 <code>builtin/out/free-models.js</code> 后编进 exe），用和用户插件
-**完全一样的 API** 完成原来 Rust 里的配置同步：
-
-- 备注名统一 <code>OC_FREE</code>（<code>\u200BOC_FREE\u200C</code>），模型名在
-  <code>model</code> 字段，因此「是不是同一条配置」按 <code>model</code> 判断；
-- 模型列表来自启动器自己的 <code>/v1/models</code>（那边一天只向上游拉一次）；
-- 走 <code>Coconut.callTool('manage_ai_profile')</code> 新增 / 更新 / 删除配置，
-  同一模型重复的会被去重删掉；
-- 读工具箱 <code>ai-gen-prefs</code>（<code>Coconut.runJs</code>）判断用户有没有关 AI 助手：
-  关了就把免费模型全删掉，并且**不打开 AI 悬浮窗、不强行打开 <code>ai_enabled</code>**；
-- 第一次使用（<code>Coconut.storage.seeded</code> 未置位、或工具箱还没有偏好记录）会写入
-  模型并打开 AI 助手——工具箱首次进入会自己把 AI 写成关闭，不能当成用户的选择；
-- 页面刚起来、会话还没就绪时，插件自己按 3 秒 × 6 次重试，不打扰用户。
-
-> 代理本身（<code>/v1/models</code>、<code>/v1/chat/completions</code>）仍在 Rust 里，
-> 插件只负责「把这些模型同步进工具箱的 AI 配置」。
-
-示例插件见 <code>examples/plugins/eye-care.js</code>。
-
----
-## 免费模型代理
-
-Rust 实现，模拟 opencode 免费网关握手：
-
-- <code>User-Agent: opencode/1.19.3</code>
-- <code>x-opencode-session</code> + <code>x-opencode-session-id</code>
-- <code>Authorization: Bearer &lt;key&gt;</code>（见下节）
-- 强制 <code>stream: true</code>
-- 自动补 <code>read</code> 工具，并剥离桥接 read 调用
-- 免费模型失败自动降级
-
-上游：<code>https://opencode.ai/inference/v1</code>。
-
-### 免费模型列表
-
-- **一天只向上游请求一次** <code>/models</code>，结果写到
-  <code>%APPDATA%\com.coconut.launcher\free-models.json</code>，
-  24 小时内重启启动器也直接读缓存，不再握手（避免触发风控）。
-- 抓取失败时沿用上次列表；冷启动没有缓存则每 10 分钟重试一次。
-- 只保留上游以 <code>-free</code> 结尾的模型，并且：
-  - <code>big-pickle</code> 不对外暴露；
-  - <code>jev-*</code> 系列不上架。
-- **对外隐藏 <code>-free</code> 后缀**：调用方看到的是
-  <code>deepseek-v4.1-flash</code>，转发时自动补回
-  <code>deepseek-v4.1-flash-free</code>。
-  所以工具箱里的模型名、<code>/v1/models</code> 返回值都不带后缀。
-
-### opencode API Key
-
-> 启动页上那个「长按椰果图标」的输入框已经删掉了：现在没有手动填 Key 的入口，
-> 代理会一直用 <code>Bearer public</code>（公开额度）。文件格式仍然保留，
-> 手动放一份 <code>opencode-key.json</code> 进去照样生效。
-
-- ~~启动页长按椰果图标弹出输入框~~（已移除）；
-- Key 保存在 <code>%APPDATA%\com.coconut.launcher\opencode-key.json</code>（仅本机）；
-- WS 初始化同步 AI 配置时，把 Key 写进每个托管配置的 <code>apiKey</code>；
-- 代理转发规则：
-  - 调用方带来的 Key 格式合法 → <code>Authorization: Bearer &lt;该 Key&gt;</code>；
-  - 未带 Key 或格式非法 → 用启动器里保存的 Key；
-  - 两者都没有 → 退回 <code>Bearer public</code>（公开额度）。
-- 合法格式：长度 8–200，仅 <code>[A-Za-z0-9._~+/=-]</code>，
-  且不是 <code>public</code> / <code>undefined</code> / <code>null</code> / <code>none</code>。
-
+> 免费模型已经迁到插件 SDK 的 `examples/free-models`：插件用 `Coconut.http` 自己开
+> `/v1/models` 与 `/v1/chat/completions`，启动器不再内置 Rust 免费模型代理。
 
 ---
 
@@ -765,12 +703,14 @@ coconut-app/
     coconut-app.exe         单文件即可运行（静态产物内嵌）
   src-tauri/
     src/main.rs             Tauri 壳 / 命令 / 生命周期
-    src/server.rs           Rust 静态服务 + 本地游戏数据 + 免费代理 + WS + 更新 + 插件宿主桥
+    src/server.rs           Rust 静态服务 + 本地游戏数据 + WS + 更新 + 插件宿主桥
     src/i18n.rs             启动页文案本地化（5 种语言）
     src/plugin.rs           插件元数据解析 / 状态落盘
     src/plugin_rt.rs        QuickJS 运行时（钩子 / 超时 / 定时器 / 宿主 API）
     src/plugin_host.rs      插件管理器（目录扫描 / 启停 / 日志 / 错误停用）
-    builtin/out/*.js           内置插件（esbuild 产物，编译进 exe）
+    src/plugin_server.rs    插件 HTTP / WebSocket 服务与 WebSocket 客户端
+    src/console_bus.rs      插件 console.* 的环形缓冲（调试终端轮询）
+    builtin/debug-terminal.js  内置调试终端源码（导出到插件目录）
     src/shell_inject.js     沉浸式外壳 + 插件浮层宿主
     build.rs                把 toolbox-static 打成内嵌压缩包
     toolbox-static/         构建时打包的静态产物

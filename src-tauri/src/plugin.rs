@@ -4,7 +4,6 @@
 //! 真正的 JS 运行时在 `plugin_rt.rs`。
 
 use serde::{Deserialize, Serialize};
-use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
 /// 插件可以被授予的权限。`network` 不限制域名，`debug` 用来只读订阅原始 WS 帧。
@@ -20,6 +19,8 @@ pub enum Permission {
     Storage,
     /// Coconut.ui：浮层 / 注入 CSS
     Ui,
+    /// Coconut.http：在插件线程外开本地 HTTP / WebSocket 服务
+    Server,
     /// 只读订阅原始 WS 帧（开发者用）
     Debug,
 }
@@ -32,6 +33,7 @@ impl Permission {
             Permission::Network => "network",
             Permission::Storage => "storage",
             Permission::Ui => "ui",
+            Permission::Server => "server",
             Permission::Debug => "debug",
         }
     }
@@ -43,6 +45,7 @@ impl Permission {
             "network" | "net" | "fetch" => Permission::Network,
             "storage" => Permission::Storage,
             "ui" => Permission::Ui,
+            "server" | "http" => Permission::Server,
             "debug" => Permission::Debug,
             _ => return None,
         })
@@ -188,7 +191,10 @@ pub fn scan_plugins(dir: &Path) -> Vec<Plugin> {
         })
         .collect();
     files.sort();
-    files.iter().filter_map(|path| load_plugin(path).ok()).collect()
+    files
+        .iter()
+        .filter_map(|path| load_plugin(path).ok())
+        .collect()
 }
 
 /// 每个插件的启用状态 / 连续错误数，落在 `plugins/state.json`。
@@ -240,11 +246,8 @@ impl PluginStates {
         if let Some(parent) = path.parent() {
             let _ = std::fs::create_dir_all(parent);
         }
-        std::fs::write(
-            path,
-            serde_json::to_vec_pretty(self).unwrap_or_default(),
-        )
-        .map_err(|error| format!("保存插件状态失败：{error}"))
+        std::fs::write(path, serde_json::to_vec_pretty(self).unwrap_or_default())
+            .map_err(|error| format!("保存插件状态失败：{error}"))
     }
 
     pub fn state(&self, id: &str) -> PluginState {
@@ -298,11 +301,6 @@ impl PluginInfo {
                 .unwrap_or_default(),
         }
     }
-}
-
-/// 权限列表去重排序（给日志 / UI 用）。
-pub fn permission_set(meta: &PluginMeta) -> HashSet<Permission> {
-    meta.permissions.iter().copied().collect()
 }
 
 #[cfg(test)]

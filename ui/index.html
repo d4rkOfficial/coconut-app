@@ -275,6 +275,7 @@
             <button type="button" data-filter="error">异常</button>
           </div>
           <div class="plugins-bulk">
+            <button type="button" id="plugins-cleanup" data-i18n="plugins.cleanupDead">清理死数据</button>
             <button type="button" id="plugins-enable-all" data-i18n="plugins.enableAll">全部启用</button>
             <button type="button" id="plugins-disable-all" data-i18n="plugins.disableAll">全部停用</button>
           </div>
@@ -302,6 +303,9 @@
         <div class="uninstall-track"><span id="uninstall-bar"></span></div>
         <div class="uninstall-foot" id="uninstall-foot" data-i18n="uninstall.ready">准备开始…</div>
         <div class="uninstall-actions" id="uninstall-actions" hidden>
+          <button class="secondary key-button" id="uninstall-exit-app" type="button" hidden data-i18n="uninstall.exit">
+            退出启动器
+          </button>
           <button class="primary key-button" id="uninstall-exit" type="button" data-i18n="uninstall.exit">
             退出启动器
           </button>

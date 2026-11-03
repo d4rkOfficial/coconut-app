@@ -34,6 +34,10 @@ fn now_ms() -> u64 {
 /// 宿主能力。由 `server.rs` 实现（那里有 WS 会话、reqwest、磁盘）。
 pub trait PluginBridge: Send + Sync {
     fn log(&self, plugin: &str, level: &str, message: &str);
+    /// console.*：只进调试终端，不写日志文件。
+    fn console_write(&self, _plugin: &str, _level: &str, _message: &str) {}
+    /// console.clear()：清空调试终端。
+    fn console_clear(&self) {}
     fn run_js(&self, plugin: &str, code: &str) -> Result<String, String>;
     fn call_tool(&self, plugin: &str, tool: &str, args: &str) -> Result<String, String>;
     fn fetch(&self, plugin: &str, url: &str, opts: &str) -> Result<String, String>;
@@ -49,6 +53,54 @@ pub trait PluginBridge: Send + Sync {
     fn storage_set(&self, plugin: &str, key: &str, value: &str) -> Result<(), String>;
     fn storage_delete(&self, plugin: &str, key: &str) -> Result<(), String>;
     fn storage_all(&self, plugin: &str) -> Result<String, String>;
+    /// 开一个 HTTP / WebSocket 服务（默认实现给测试用）。
+    fn server_listen(&self, _plugin: &str, _host: &str, _port: u16) -> Result<Value, String> {
+        Err("当前宿主不支持 server".into())
+    }
+    fn server_close(&self, _plugin: &str, _id: u64) -> Result<(), String> {
+        Err("当前宿主不支持 server".into())
+    }
+    fn server_close_all(&self, _plugin: &str) {}
+    fn server_respond(
+        &self,
+        _plugin: &str,
+        _request: u64,
+        _status: u16,
+        _headers: &str,
+        _body: &str,
+        _end: bool,
+    ) -> Result<bool, String> {
+        Err("当前宿主不支持 server".into())
+    }
+    fn server_ws_send(
+        &self,
+        _plugin: &str,
+        _server: u64,
+        _connection: u64,
+        _text: &str,
+    ) -> Result<bool, String> {
+        Err("当前宿主不支持 server".into())
+    }
+    fn server_ws_close(
+        &self,
+        _plugin: &str,
+        _server: u64,
+        _connection: u64,
+    ) -> Result<bool, String> {
+        Err("当前宿主不支持 server".into())
+    }
+    fn ws_client_connect(&self, _plugin: &str, _url: &str) -> Result<Value, String> {
+        Err("当前宿主不支持 WebSocket".into())
+    }
+    fn ws_client_send(&self, _plugin: &str, _id: u64, _text: &str) -> Result<bool, String> {
+        Err("当前宿主不支持 WebSocket".into())
+    }
+    fn ws_client_close(&self, _plugin: &str, _id: u64) -> Result<bool, String> {
+        Err("当前宿主不支持 WebSocket".into())
+    }
+    fn poll_events(&self, _plugin: &str) -> Result<String, String> {
+        Ok("[]".into())
+    }
 }
 
 /// 插件线程回报给管理器的事件。
@@ -70,6 +122,8 @@ pub struct Worker {
     pub id: String,
     tx: Sender<Job>,
     handle: Option<std::thread::JoinHandle<()>>,
+    bridge: Arc<dyn PluginBridge>,
+    servers_closed: bool,
 }
 
 impl Worker {
@@ -86,13 +140,15 @@ impl Worker {
         if let Some(handle) = self.handle.take() {
             let _ = handle.join();
         }
+        self.close_servers();
     }
 
-    pub fn finished(&self) -> bool {
-        self.handle
-            .as_ref()
-            .map(|handle| handle.is_finished())
-            .unwrap_or(true)
+    fn close_servers(&mut self) {
+        if self.servers_closed {
+            return;
+        }
+        self.servers_closed = true;
+        self.bridge.server_close_all(&self.id);
     }
 }
 
@@ -102,6 +158,7 @@ impl Drop for Worker {
         if let Some(handle) = self.handle.take() {
             let _ = handle.join();
         }
+        self.close_servers();
     }
 }
 
@@ -115,6 +172,7 @@ pub fn spawn(
     let (tx, rx) = std::sync::mpsc::channel::<Job>();
     let id = plugin.id.clone();
     let thread_name = format!("coconut-plugin-{id}");
+    let worker_bridge = bridge.clone();
     match std::thread::Builder::new()
         .name(thread_name)
         .spawn(move || worker_main(plugin, bridge, signals, rx, timeout))
@@ -123,6 +181,8 @@ pub fn spawn(
             id,
             tx,
             handle: Some(handle),
+            bridge: worker_bridge,
+            servers_closed: false,
         },
         Err(error) => {
             eprintln!("[plugin] 启动插件线程失败：{error}");
@@ -130,6 +190,8 @@ pub fn spawn(
                 id,
                 tx,
                 handle: None,
+                bridge: worker_bridge,
+                servers_closed: false,
             }
         }
     }
@@ -175,23 +237,27 @@ fn worker_main(
     })
     .to_string();
 
-    if let Err(error) = install_api(&context, &plugin.id, &permissions, &bridge, &signals, &meta_json)
-    {
+    if let Err(error) = install_api(
+        &context,
+        &plugin.id,
+        &permissions,
+        &bridge,
+        &signals,
+        &meta_json,
+    ) {
         let _ = signals.send(Signal::Error(format!("安装插件 API 失败：{error}")));
         return;
     }
 
-    if let Err(error) = context.with(|ctx| -> Result<(), rquickjs::Error> {
-        ctx.eval::<(), _>(PRELUDE)
-    }) {
+    if let Err(error) =
+        context.with(|ctx| -> Result<(), rquickjs::Error> { ctx.eval::<(), _>(PRELUDE) })
+    {
         let _ = signals.send(Signal::Error(format!("插件预置脚本失败：{error}")));
         return;
     }
 
     let source = plugin.source.clone();
-    match context.with(|ctx| -> Result<(), rquickjs::Error> {
-        ctx.eval::<(), _>(source)
-    }) {
+    match context.with(|ctx| -> Result<(), rquickjs::Error> { ctx.eval::<(), _>(source) }) {
         Ok(()) => {
             let _ = signals.send(Signal::Ok);
         }
@@ -207,15 +273,24 @@ fn worker_main(
     }
 
     // onStart：启动器已经起来了，但工具箱页面可能还没打开。
-    report(&signals, run_hook(&context, &deadline, timeout, "onStart", &Value::Null));
+    report(
+        &signals,
+        run_hook(&context, &deadline, timeout, "onStart", &Value::Null),
+    );
 
     loop {
         match rx.recv_timeout(Duration::from_millis(8)) {
             Ok(Job::Hello(info)) => {
-                report(&signals, run_hook(&context, &deadline, timeout, "onHello", &info));
+                report(
+                    &signals,
+                    run_hook(&context, &deadline, timeout, "onHello", &info),
+                );
             }
             Ok(Job::Event(event)) => {
-                report(&signals, run_hook(&context, &deadline, timeout, "onEvent", &event));
+                report(
+                    &signals,
+                    run_hook(&context, &deadline, timeout, "onEvent", &event),
+                );
             }
             Ok(Job::Stop) => {
                 let _ = run_hook(&context, &deadline, timeout, "onStop", &Value::Null);
@@ -235,6 +310,13 @@ fn worker_main(
             let _ = fire.call::<_, u32>(())?;
             Ok(())
         });
+        // 服务 handler 里可能同步等一次上游请求（模型生成可能几十秒），
+        // 不能用钩子的 10 秒上限；给它一个更宽的独立预算，避免把正常请求打断。
+        deadline.store(
+            now_ms().saturating_add(timeout.as_millis() as u64 * 30),
+            Ordering::SeqCst,
+        );
+        pump_server_events(&context);
         pump_jobs(&context);
         deadline.store(0, Ordering::SeqCst);
     }
@@ -243,20 +325,19 @@ fn worker_main(
 /// QuickJS 的 `Error::Exception` 只给一句「Exception generated by QuickJS」，
 /// 真正的原因要用 `ctx.catch()` 取出来。
 fn describe_exception(context: &Context) -> String {
-    context
-        .with(|ctx| -> String {
-            let value = ctx.catch();
-            if let Some(exception) = value.clone().into_exception() {
-                if let Some(message) = exception.message() {
-                    return message;
-                }
+    context.with(|ctx| -> String {
+        let value = ctx.catch();
+        if let Some(exception) = value.clone().into_exception() {
+            if let Some(message) = exception.message() {
+                return message;
             }
-            value
-                .get::<rquickjs::String>()
-                .ok()
-                .and_then(|text| text.to_string().ok())
-                .unwrap_or_default()
-        })
+        }
+        value
+            .get::<rquickjs::String>()
+            .ok()
+            .and_then(|text| text.to_string().ok())
+            .unwrap_or_default()
+    })
 }
 
 fn report(signals: &Sender<Signal>, result: Result<(), String>) {
@@ -317,7 +398,9 @@ fn install_api(
                 Function::new(ctx.clone(), move |tool: String, args: String| -> String {
                     need!(perms, Permission::Toolbox, "toolbox");
                     match bridge.call_tool(&id, &tool, &args) {
-                        Ok(value) => ok_envelope(serde_json::from_str(&value).unwrap_or(Value::Null)),
+                        Ok(value) => {
+                            ok_envelope(serde_json::from_str(&value).unwrap_or(Value::Null))
+                        }
                         Err(error) => error_envelope(&error),
                     }
                 })?,
@@ -334,7 +417,164 @@ fn install_api(
                 Function::new(ctx.clone(), move |url: String, opts: String| -> String {
                     need!(perms, Permission::Network, "network");
                     match bridge.fetch(&id, &url, &opts) {
-                        Ok(value) => ok_envelope(serde_json::from_str(&value).unwrap_or(Value::Null)),
+                        Ok(value) => {
+                            ok_envelope(serde_json::from_str(&value).unwrap_or(Value::Null))
+                        }
+                        Err(error) => error_envelope(&error),
+                    }
+                })?,
+            )?;
+        }
+
+        // server：开本地 HTTP / WebSocket 服务
+        {
+            let bridge = bridge.clone();
+            let id = plugin_id.to_string();
+            let perms = permissions.to_vec();
+            coconut.set(
+                "serverListen",
+                Function::new(ctx.clone(), move |host: String, port: u32| -> String {
+                    need!(perms, Permission::Server, "server");
+                    match bridge.server_listen(&id, &host, port as u16) {
+                        Ok(value) => ok_envelope(value),
+                        Err(error) => error_envelope(&error),
+                    }
+                })?,
+            )?;
+        }
+        {
+            let bridge = bridge.clone();
+            let id = plugin_id.to_string();
+            let perms = permissions.to_vec();
+            coconut.set(
+                "serverClose",
+                Function::new(ctx.clone(), move |server: u64| -> String {
+                    need!(perms, Permission::Server, "server");
+                    match bridge.server_close(&id, server) {
+                        Ok(()) => ok_envelope(Value::Null),
+                        Err(error) => error_envelope(&error),
+                    }
+                })?,
+            )?;
+        }
+        {
+            let bridge = bridge.clone();
+            let id = plugin_id.to_string();
+            let perms = permissions.to_vec();
+            coconut.set(
+                "serverRespond",
+                Function::new(
+                    ctx.clone(),
+                    move |request: u64,
+                          status: u32,
+                          headers: String,
+                          body: String,
+                          end: bool|
+                          -> String {
+                        need!(perms, Permission::Server, "server");
+                        match bridge.server_respond(
+                            &id,
+                            request,
+                            status as u16,
+                            &headers,
+                            &body,
+                            end,
+                        ) {
+                            Ok(value) => ok_envelope(json!(value)),
+                            Err(error) => error_envelope(&error),
+                        }
+                    },
+                )?,
+            )?;
+        }
+        {
+            let bridge = bridge.clone();
+            let id = plugin_id.to_string();
+            let perms = permissions.to_vec();
+            coconut.set(
+                "serverWsSend",
+                Function::new(
+                    ctx.clone(),
+                    move |server: u64, connection: u64, text: String| -> String {
+                        need!(perms, Permission::Server, "server");
+                        match bridge.server_ws_send(&id, server, connection, &text) {
+                            Ok(value) => ok_envelope(json!(value)),
+                            Err(error) => error_envelope(&error),
+                        }
+                    },
+                )?,
+            )?;
+        }
+        {
+            let bridge = bridge.clone();
+            let id = plugin_id.to_string();
+            let perms = permissions.to_vec();
+            coconut.set(
+                "serverWsClose",
+                Function::new(ctx.clone(), move |server: u64, connection: u64| -> String {
+                    need!(perms, Permission::Server, "server");
+                    match bridge.server_ws_close(&id, server, connection) {
+                        Ok(value) => ok_envelope(json!(value)),
+                        Err(error) => error_envelope(&error),
+                    }
+                })?,
+            )?;
+        }
+
+        // WebSocket 客户端：走 network 权限
+        {
+            let bridge = bridge.clone();
+            let id = plugin_id.to_string();
+            let perms = permissions.to_vec();
+            coconut.set(
+                "wsConnect",
+                Function::new(ctx.clone(), move |url: String| -> String {
+                    need!(perms, Permission::Network, "network");
+                    match bridge.ws_client_connect(&id, &url) {
+                        Ok(value) => ok_envelope(value),
+                        Err(error) => error_envelope(&error),
+                    }
+                })?,
+            )?;
+        }
+        {
+            let bridge = bridge.clone();
+            let id = plugin_id.to_string();
+            let perms = permissions.to_vec();
+            coconut.set(
+                "wsSend",
+                Function::new(ctx.clone(), move |client: u64, text: String| -> String {
+                    need!(perms, Permission::Network, "network");
+                    match bridge.ws_client_send(&id, client, &text) {
+                        Ok(value) => ok_envelope(json!(value)),
+                        Err(error) => error_envelope(&error),
+                    }
+                })?,
+            )?;
+        }
+        {
+            let bridge = bridge.clone();
+            let id = plugin_id.to_string();
+            let perms = permissions.to_vec();
+            coconut.set(
+                "wsClose",
+                Function::new(ctx.clone(), move |client: u64| -> String {
+                    need!(perms, Permission::Network, "network");
+                    match bridge.ws_client_close(&id, client) {
+                        Ok(value) => ok_envelope(json!(value)),
+                        Err(error) => error_envelope(&error),
+                    }
+                })?,
+            )?;
+        }
+        {
+            let bridge = bridge.clone();
+            let id = plugin_id.to_string();
+            coconut.set(
+                "pollEvents",
+                Function::new(ctx.clone(), move || -> String {
+                    match bridge.poll_events(&id) {
+                        Ok(value) => ok_envelope(serde_json::from_str(&value).unwrap_or(json!([]))),
                         Err(error) => error_envelope(&error),
                     }
                 })?,
@@ -409,8 +649,36 @@ fn install_api(
             let id = plugin_id.to_string();
             coconut.set(
                 "log",
-                Function::new(ctx.clone(), move |level: String, message: String| -> String {
-                    bridge.log(&id, &level, &message);
+                Function::new(
+                    ctx.clone(),
+                    move |level: String, message: String| -> String {
+                        bridge.log(&id, &level, &message);
+                        ok_envelope(Value::Null)
+                    },
+                )?,
+            )?;
+        }
+        // console.*：只进内置调试终端，不写日志文件
+        {
+            let bridge = bridge.clone();
+            let id = plugin_id.to_string();
+            coconut.set(
+                "consoleWrite",
+                Function::new(
+                    ctx.clone(),
+                    move |level: String, message: String| -> String {
+                        bridge.console_write(&id, &level, &message);
+                        ok_envelope(Value::Null)
+                    },
+                )?,
+            )?;
+        }
+        {
+            let bridge = bridge.clone();
+            coconut.set(
+                "consoleClear",
+                Function::new(ctx.clone(), move || -> String {
+                    bridge.console_clear();
                     ok_envelope(Value::Null)
                 })?,
             )?;
@@ -627,6 +895,16 @@ fn run_hook(
     }
 }
 
+/// 取插件服务 / WebSocket 客户端的待处理事件，并在 JS 里分发给监听器。
+fn pump_server_events(context: &Context) {
+    let _ = context.with(|ctx| -> Result<(), rquickjs::Error> {
+        if let Ok(poll) = ctx.globals().get::<_, Function>("__coconut_poll_events") {
+            let _ = poll.call::<_, u32>(());
+        }
+        Ok(())
+    });
+}
+
 fn pump_jobs(context: &Context) -> bool {
     let mut ran = false;
     for _ in 0..64 {
@@ -645,18 +923,6 @@ fn ok_envelope(value: Value) -> String {
 
 fn error_envelope(message: &str) -> String {
     json!({ "ok": false, "error": message }).to_string()
-}
-
-/// 内置插件源码包成 `Plugin`（没有路径、`builtin = true`）。
-pub fn builtin_plugin(id: &str, source: &str) -> Plugin {
-    let meta = crate::plugin::parse_meta(source, id);
-    Plugin {
-        id: id.to_string(),
-        path: None,
-        source: source.to_string(),
-        meta,
-        builtin: true,
-    }
 }
 
 /// 页面侧预置脚本：/// - 把 `coconut.*` 的 `{ok, value}` 信封拆成返回值或抛错；
@@ -710,7 +976,31 @@ const PRELUDE: &str = r#"
     return fired;
   };
 
-  const Coconut = {
+  function createEmitter() {
+    const listeners = Object.create(null);
+    return {
+      addEventListener: function (type, listener) {
+        if (typeof listener !== 'function') throw new TypeError('listener must be a function');
+        const key = String(type || '');
+        const list = listeners[key] || (listeners[key] = []);
+        if (list.indexOf(listener) < 0) list.push(listener);
+        return this;
+      },
+      removeEventListener: function (type, listener) {
+        const list = listeners[String(type || '')];
+        if (!list) return this;
+        const index = list.indexOf(listener);
+        if (index >= 0) list.splice(index, 1);
+        return this;
+      },
+      __listeners: function (type) {
+        return (listeners[String(type || '')] || []).slice();
+      }
+    };
+  }
+
+  const Coconut = createEmitter();
+  Object.assign(Coconut, {
     plugin: meta,
     runJs: function (code) { return String(unwrap(coconut.runJs(String(code)))); },
     callTool: function (tool, args) {
@@ -803,7 +1093,228 @@ const PRELUDE: &str = r#"
     setInterval: globalThis.setInterval,
     clearTimeout: cancel,
     clearInterval: cancel
+  });
+
+  const httpServers = new Map();
+  const serverSockets = new Map();
+  const webSockets = new Map();
+
+  function safeReport(error) {
+    try {
+      coconut.reportError(String((error && error.stack) || error));
+    } catch (ignored) {}
+  }
+
+  function emit(target, type, event) {
+    const listeners = target.__listeners(type);
+    for (let i = 0; i < listeners.length; i++) {
+      try {
+        const result = listeners[i](event);
+        if (result && typeof result.then === 'function') result.catch(safeReport);
+      } catch (error) {
+        safeReport(error);
+      }
+    }
+  }
+
+  function responseFor(requestId) {
+    let status = 200;
+    let headers = { 'content-type': 'text/plain; charset=utf-8' };
+    let ended = false;
+    const flush = function (body, end) {
+      if (ended) return false;
+      const text = body === undefined || body === null ? '' : String(body);
+      let value = false;
+      try {
+        value = Boolean(unwrap(coconut.serverRespond(Number(requestId), Number(status), JSON.stringify(headers), text, Boolean(end))));
+      } catch (error) {
+        ended = true;
+        throw error;
+      }
+      if (end) ended = true;
+      return value;
+    };
+    const response = {
+      get ended() { return ended; },
+      status: function (code) { status = Number(code) || 200; return response; },
+      header: function (name, value) { headers[String(name)] = String(value); return response; },
+      setHeader: function (name, value) { return response.header(name, value); },
+      write: function (chunk) { return flush(chunk, false); },
+      end: function (body) { return flush(body, true); },
+      send: function (body) {
+        if (body && typeof body === 'object' && !(body instanceof String)) {
+          headers['content-type'] = headers['content-type'] || 'application/json; charset=utf-8';
+          return flush(JSON.stringify(body), true);
+        }
+        return flush(body, true);
+      },
+      json: function (value) {
+        headers['content-type'] = 'application/json; charset=utf-8';
+        return flush(JSON.stringify(value), true);
+      }
+    };
+    return response;
+  }
+
+  function socketFor(server, connection, path) {
+    const key = String(server) + ':' + String(connection);
+    const existing = serverSockets.get(key);
+    if (existing) return existing;
+    const socket = createEmitter();
+    socket.id = connection;
+    socket.path = path || '';
+    socket.send = function (data) {
+      return Boolean(unwrap(coconut.serverWsSend(Number(server), Number(connection), String(data))));
+    };
+    socket.close = function () {
+      return Boolean(unwrap(coconut.serverWsClose(Number(server), Number(connection))));
+    };
+    serverSockets.set(key, socket);
+    return socket;
+  }
+
+  function dispatchHttp(event) {
+    const server = httpServers.get(Number(event.server));
+    if (!server) return;
+    const response = responseFor(event.id);
+    const request = {
+      server: Number(event.server),
+      method: String(event.method || 'GET'),
+      path: String(event.path || '/'),
+      query: String(event.query || ''),
+      headers: event.headers || {},
+      body: String(event.body || '')
+    };
+    const listeners = server.__listeners('request');
+    if (!listeners.length) {
+      response.status(404).send('no request listener');
+      return;
+    }
+    for (let i = 0; i < listeners.length; i++) {
+      try {
+        const result = listeners[i](request, response);
+        if (result && typeof result.then === 'function') {
+          result.catch(function (error) {
+            if (!response.ended) response.status(500).send('plugin handler failed: ' + String((error && error.message) || error));
+            safeReport(error);
+          });
+        }
+      } catch (error) {
+        if (!response.ended) response.status(500).send('plugin handler failed: ' + String((error && error.message) || error));
+        safeReport(error);
+      }
+    }
+  }
+
+  function dispatchRealtime(event) {
+    const type = String(event.type || '');
+    if (type === 'http-request') {
+      dispatchHttp(event);
+      return;
+    }
+    if (event.source === 'server') {
+      const server = httpServers.get(Number(event.server));
+      if (!server) return;
+      if (type === 'ws-open') {
+        const socket = socketFor(event.server, event.conn, event.path);
+        emit(server, 'connection', socket);
+        return;
+      }
+      const socket = serverSockets.get(String(event.server) + ':' + String(event.conn));
+      if (!socket) return;
+      if (type === 'ws-message') {
+        emit(socket, 'message', { data: String(event.data || '') });
+      } else if (type === 'ws-close') {
+        emit(socket, 'close', { code: Number(event.code || 1005) });
+        serverSockets.delete(String(event.server) + ':' + String(event.conn));
+      }
+      return;
+    }
+    if (event.source === 'client') {
+      const socket = webSockets.get(Number(event.client));
+      if (!socket) return;
+      if (type === 'ws-open') {
+        socket.connected = true;
+        emit(socket, 'open', {});
+      } else if (type === 'ws-message') {
+        emit(socket, 'message', { data: String(event.data || '') });
+      } else if (type === 'ws-close') {
+        socket.connected = false;
+        emit(socket, 'close', { code: Number(event.code || 1005) });
+        webSockets.delete(Number(event.client));
+      }
+    }
+  }
+
+  globalThis.__coconut_poll_events = function () {
+    let events;
+    try {
+      events = unwrap(coconut.pollEvents());
+    } catch (error) {
+      safeReport(error);
+      return 0;
+    }
+    if (!Array.isArray(events)) return 0;
+    for (let i = 0; i < events.length; i++) {
+      try {
+        dispatchRealtime(events[i]);
+      } catch (error) {
+        safeReport(error);
+      }
+    }
+    return events.length;
   };
+
+  const createHttpServer = function (options) {
+    const opts = options === undefined || options === null ? {} : options;
+    const host = String(opts.host === undefined || opts.host === null ? '127.0.0.1' : opts.host);
+    const port = Number(opts.port || 0);
+    const info = unwrap(coconut.serverListen(host, port));
+    const server = createEmitter();
+    server.id = Number(info.id);
+    server.port = Number(info.port);
+    server.close = function () {
+      try {
+        unwrap(coconut.serverClose(server.id));
+      } finally {
+        httpServers.delete(server.id);
+        for (const key of Array.from(serverSockets.keys())) {
+          if (key.indexOf(String(server.id) + ':') === 0) serverSockets.delete(key);
+        }
+      }
+      return true;
+    };
+    httpServers.set(server.id, server);
+    return server;
+  };
+
+  Coconut.http = function (options) {
+    return createHttpServer(options);
+  };
+  Coconut.http.createServer = createHttpServer;
+
+  Coconut.webSocket = function (url) {
+    if (typeof url !== 'string' || !url) throw new TypeError('webSocket(url) 需要一个地址');
+    const info = unwrap(coconut.wsConnect(url));
+    const id = Number(info.id);
+    const socket = createEmitter();
+    socket.id = id;
+    socket.url = url;
+    socket.connected = true;
+    socket.send = function (data) {
+      return Boolean(unwrap(coconut.wsSend(id, String(data))));
+    };
+    socket.close = function () {
+      try {
+        return Boolean(unwrap(coconut.wsClose(id)));
+      } finally {
+        webSockets.delete(id);
+      }
+    };
+    webSockets.set(id, socket);
+    return socket;
+  };
+
   globalThis.Coconut = Coconut;
 
   const levels = ['log', 'info', 'warn', 'error', 'debug'];
@@ -815,9 +1326,14 @@ const PRELUDE: &str = r#"
         const value = arguments[i];
         parts.push(typeof value === 'string' ? value : JSON.stringify(value));
       }
-      coconut.log(level === 'error' || level === 'warn' ? level : 'info', parts.join(' '));
+      coconut.consoleWrite(level === 'error' || level === 'warn' ? level : 'info', parts.join(' '));
     };
   });
+  globalThis.console.clear = function () {
+    coconut.consoleClear();
+  };
+  globalThis.console.dir = globalThis.console.log;
+  globalThis.console.table = globalThis.console.log;
 
   let done = true;
   let error = '';
@@ -831,7 +1347,9 @@ const PRELUDE: &str = r#"
 
   globalThis.__coconut_hook_invoke = function (argJson) {
     const fn = globalThis[current];
-    if (typeof fn !== 'function') { done = true; return false; }
+    const key = String(current).replace(/^on/, '').toLowerCase();
+    const listeners = Coconut.__listeners(key);
+    if (typeof fn !== 'function' && !listeners.length) { done = true; return false; }
     const finish = function (reason) {
       if (reason !== undefined) {
         if (typeof reason === 'string') error = reason;
@@ -845,9 +1363,15 @@ const PRELUDE: &str = r#"
     };
     try {
       const arg = argJson ? JSON.parse(argJson) : null;
-      const result = fn(arg);
-      if (result && typeof result.then === 'function') {
-        result.then(function () { finish(); }, function (reason) { finish(reason); });
+      const jobs = [];
+      if (typeof fn === 'function') jobs.push(fn(arg));
+      for (let i = 0; i < listeners.length; i++) jobs.push(listeners[i](arg));
+      let pending = false;
+      for (let i = 0; i < jobs.length; i++) {
+        if (jobs[i] && typeof jobs[i].then === 'function') pending = true;
+      }
+      if (pending) {
+        Promise.all(jobs).then(function () { finish(); }, function (reason) { finish(reason); });
         return true;
       }
       finish();
@@ -883,8 +1407,14 @@ mod tests {
         logs: Mutex<Vec<String>>,
         tools: Mutex<Vec<String>>,
         fetches: Mutex<Vec<String>>,
-        js: Mutex<Vec<String>>,
         panels: Mutex<Vec<String>>,
+        servers: Mutex<Vec<String>>,
+        responses: Mutex<Vec<String>>,
+        console: Mutex<Vec<String>>,
+        clears: Mutex<u32>,
+        ws_connections: Mutex<Vec<String>>,
+        ws_sent: Mutex<Vec<String>>,
+        events: Mutex<Vec<Value>>,
         storage: Mutex<HashMap<String, String>>,
     }
 
@@ -898,11 +1428,14 @@ mod tests {
         fn fetched(&self) -> Vec<String> {
             self.fetches.lock().unwrap().clone()
         }
-        fn js(&self) -> Vec<String> {
-            self.js.lock().unwrap().clone()
-        }
         fn panels(&self) -> Vec<String> {
             self.panels.lock().unwrap().clone()
+        }
+        fn responses(&self) -> Vec<String> {
+            self.responses.lock().unwrap().clone()
+        }
+        fn events(&self) -> &Mutex<Vec<Value>> {
+            &self.events
         }
     }
 
@@ -910,8 +1443,18 @@ mod tests {
         fn log(&self, _plugin: &str, _level: &str, message: &str) {
             self.logs.lock().unwrap().push(message.to_string());
         }
-        fn run_js(&self, _plugin: &str, code: &str) -> Result<String, String> {
-            self.js.lock().unwrap().push(code.to_string());
+
+        fn console_write(&self, _plugin: &str, level: &str, message: &str) {
+            self.console
+                .lock()
+                .unwrap()
+                .push(format!("{level}:{message}"));
+        }
+
+        fn console_clear(&self) {
+            *self.clears.lock().unwrap() += 1;
+        }
+        fn run_js(&self, _plugin: &str, _code: &str) -> Result<String, String> {
             Ok("{\"ok\":1}".to_string())
         }
         fn call_tool(&self, _plugin: &str, tool: &str, args: &str) -> Result<String, String> {
@@ -927,7 +1470,12 @@ mod tests {
             panels.push(format!("{html} {css}"));
             Ok(panels.len() as u32)
         }
-        fn ui_overlay_visible(&self, _plugin: &str, _id: u32, _visible: bool) -> Result<bool, String> {
+        fn ui_overlay_visible(
+            &self,
+            _plugin: &str,
+            _id: u32,
+            _visible: bool,
+        ) -> Result<bool, String> {
             Ok(true)
         }
         fn ui_overlay_remove(&self, _plugin: &str, _id: u32) -> Result<bool, String> {
@@ -970,6 +1518,43 @@ mod tests {
         fn storage_all(&self, _plugin: &str) -> Result<String, String> {
             let map = self.storage.lock().unwrap().clone();
             Ok(serde_json::to_string(&map).unwrap_or_else(|_| "{}".to_string()))
+        }
+
+        fn server_listen(&self, _plugin: &str, host: &str, port: u16) -> Result<Value, String> {
+            self.servers.lock().unwrap().push(format!("{host}:{port}"));
+            Ok(json!({ "id": 1, "port": 12345 }))
+        }
+
+        fn server_respond(
+            &self,
+            _plugin: &str,
+            request: u64,
+            status: u16,
+            headers: &str,
+            body: &str,
+            end: bool,
+        ) -> Result<bool, String> {
+            self.responses
+                .lock()
+                .unwrap()
+                .push(format!("{request} {status} {headers} {body} {end}"));
+            Ok(true)
+        }
+
+        fn poll_events(&self, _plugin: &str) -> Result<String, String> {
+            let mut events = self.events.lock().unwrap();
+            let out = Value::Array(events.drain(..).collect());
+            Ok(out.to_string())
+        }
+
+        fn ws_client_connect(&self, _plugin: &str, url: &str) -> Result<Value, String> {
+            self.ws_connections.lock().unwrap().push(url.to_string());
+            Ok(json!({ "id": 9 }))
+        }
+
+        fn ws_client_send(&self, _plugin: &str, id: u64, text: &str) -> Result<bool, String> {
+            self.ws_sent.lock().unwrap().push(format!("{id} {text}"));
+            Ok(true)
         }
     }
 
@@ -1016,7 +1601,10 @@ async function onHello(info) {
         let recorder = Arc::new(Recorder::default());
         let (tx, rx) = std::sync::mpsc::channel();
         let mut worker = spawn(
-            plugin(source, &[Permission::Toolbox, Permission::Storage, Permission::Dom]),
+            plugin(
+                source,
+                &[Permission::Toolbox, Permission::Storage, Permission::Dom],
+            ),
             recorder.clone(),
             tx,
             Duration::from_secs(5),
@@ -1026,13 +1614,191 @@ async function onHello(info) {
         let (_, errors) = drain(&rx, Duration::from_millis(600));
         assert!(errors.is_empty(), "unexpected errors: {errors:?}");
         let logs = recorder.logs();
-        assert!(logs.iter().any(|line| line == "started 42"), "logs: {logs:?}");
+        assert!(
+            logs.iter().any(|line| line == "started 42"),
+            "logs: {logs:?}"
+        );
         assert!(
             logs.iter().any(|line| line == "hello s1"),
             "async hook did not resume after await: {logs:?}"
         );
         let tools = recorder.tools();
         assert_eq!(tools.len(), 2, "tools: {tools:?}");
+        worker.stop();
+    }
+
+    #[test]
+    fn lifecycle_listeners_run_alongside_global_hooks() {
+        let source = r#"
+async function onStart() {
+  Coconut.log('hook-start');
+  Coconut.addEventListener('stop', function () {
+    Coconut.log('listener-stop');
+  });
+}
+"#;
+        let recorder = Arc::new(Recorder::default());
+        let (tx, rx) = std::sync::mpsc::channel();
+        let mut worker = spawn(
+            plugin(source, &[]),
+            recorder.clone(),
+            tx,
+            Duration::from_secs(5),
+        );
+        let _ = drain(&rx, Duration::from_millis(200));
+        worker.stop();
+        let logs = recorder.logs();
+        assert!(
+            logs.iter().any(|line| line == "hook-start"),
+            "logs: {logs:?}"
+        );
+        assert!(
+            logs.iter().any(|line| line == "listener-stop"),
+            "listener did not run: {logs:?}"
+        );
+    }
+
+    #[test]
+    fn http_server_events_reach_the_js_handler() {
+        let source = r#"
+function onStart() {
+  Coconut.log('started');
+  const server = Coconut.http.createServer({ port: 0 });
+  server.addEventListener('request', function (request, response) {
+    Coconut.log('request', request.path);
+    response.status(202).json({ path: request.path, body: request.body });
+  });
+}
+"#;
+        let recorder = Arc::new(Recorder::default());
+        let (tx, rx) = std::sync::mpsc::channel();
+        let mut worker = spawn(
+            plugin(source, &[Permission::Server]),
+            recorder.clone(),
+            tx,
+            Duration::from_secs(5),
+        );
+        std::thread::sleep(Duration::from_millis(120));
+        recorder.events().lock().unwrap().push(json!({
+            "type": "http-request",
+            "server": 1,
+            "id": 7,
+            "method": "POST",
+            "path": "/x",
+            "query": "",
+            "headers": {},
+            "body": "{\"a\":1}"
+        }));
+        let deadline = std::time::Instant::now() + Duration::from_millis(1000);
+        while std::time::Instant::now() < deadline && recorder.responses().is_empty() {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        let responses = recorder.responses();
+        assert_eq!(
+            responses.len(),
+            1,
+            "responses: {responses:?}; logs: {:?}; servers: {:?}",
+            recorder.logs(),
+            recorder.servers.lock().unwrap()
+        );
+        assert!(responses[0].contains("7 202"), "responses: {responses:?}");
+        assert!(responses[0].contains("/x"), "responses: {responses:?}");
+        let _ = drain(&rx, Duration::from_millis(50));
+        worker.stop();
+    }
+
+    #[test]
+    fn websocket_client_uses_the_event_object_api() {
+        let source = r#"
+function onStart() {
+  const ws = Coconut.webSocket('ws://example.test');
+  ws.addEventListener('open', function () {
+    ws.send('hello');
+  });
+  ws.addEventListener('message', function (event) {
+    Coconut.log('got ' + event.data);
+  });
+}
+"#;
+        let recorder = Arc::new(Recorder::default());
+        let (tx, rx) = std::sync::mpsc::channel();
+        let mut worker = spawn(
+            plugin(source, &[Permission::Network]),
+            recorder.clone(),
+            tx,
+            Duration::from_secs(5),
+        );
+        std::thread::sleep(Duration::from_millis(120));
+        recorder.events().lock().unwrap().push(json!({
+            "type": "ws-open",
+            "source": "client",
+            "client": 9
+        }));
+        recorder.events().lock().unwrap().push(json!({
+            "type": "ws-message",
+            "source": "client",
+            "client": 9,
+            "data": "world"
+        }));
+        let deadline = std::time::Instant::now() + Duration::from_millis(1000);
+        while std::time::Instant::now() < deadline && recorder.ws_sent.lock().unwrap().is_empty() {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert_eq!(
+            recorder.ws_connections.lock().unwrap().as_slice(),
+            ["ws://example.test"]
+        );
+        assert_eq!(recorder.ws_sent.lock().unwrap().as_slice(), ["9 hello"]);
+        assert!(
+            recorder.logs().iter().any(|line| line == "got world"),
+            "logs: {:?}",
+            recorder.logs()
+        );
+        let _ = drain(&rx, Duration::from_millis(50));
+        worker.stop();
+    }
+
+    #[test]
+    fn console_goes_to_terminal_bus_and_not_log_file() {
+        let source = r#"
+function onStart() {
+  Coconut.log('coconut-log');
+  console.log('terminal-line');
+  console.clear();
+}
+"#;
+        let recorder = Arc::new(Recorder::default());
+        let (tx, rx) = std::sync::mpsc::channel();
+        let mut worker = spawn(
+            plugin(source, &[]),
+            recorder.clone(),
+            tx,
+            Duration::from_secs(5),
+        );
+        let _ = drain(&rx, Duration::from_millis(300));
+        assert!(recorder.logs().iter().any(|line| line == "coconut-log"));
+        assert_eq!(
+            recorder.console.lock().unwrap().as_slice(),
+            ["info:terminal-line"]
+        );
+        assert_eq!(*recorder.clears.lock().unwrap(), 1);
+        assert!(!recorder.logs().iter().any(|line| line == "terminal-line"));
+        worker.stop();
+    }
+
+    #[test]
+    fn plugin_layer_eval_is_available() {
+        let source = "function onStart() { Coconut.log(String(eval('1 + 1'))); }";
+        let recorder = Arc::new(Recorder::default());
+        let (tx, rx) = std::sync::mpsc::channel();
+        let mut worker = spawn(
+            plugin(source, &[]),
+            recorder.clone(),
+            tx,
+            Duration::from_secs(5),
+        );
+        let _ = drain(&rx, Duration::from_millis(300));
+        assert!(recorder.logs().iter().any(|line| line == "2"));
         worker.stop();
     }
 
@@ -1045,7 +1811,12 @@ function onStart() {
 "#;
         let recorder = Arc::new(Recorder::default());
         let (tx, rx) = std::sync::mpsc::channel();
-        let mut worker = spawn(plugin(source, &[]), recorder.clone(), tx, Duration::from_secs(5));
+        let mut worker = spawn(
+            plugin(source, &[]),
+            recorder.clone(),
+            tx,
+            Duration::from_secs(5),
+        );
         let (_, errors) = drain(&rx, Duration::from_millis(600));
         assert!(
             errors.iter().any(|error| error.contains("network")),
@@ -1079,7 +1850,12 @@ function onStart() {
         let source = "var unused = 1;";
         let recorder = Arc::new(Recorder::default());
         let (tx, rx) = std::sync::mpsc::channel();
-        let mut worker = spawn(plugin(source, &[]), recorder.clone(), tx, Duration::from_secs(5));
+        let mut worker = spawn(
+            plugin(source, &[]),
+            recorder.clone(),
+            tx,
+            Duration::from_secs(5),
+        );
         let (ok, errors) = drain(&rx, Duration::from_millis(400));
         assert!(errors.is_empty(), "errors: {errors:?}");
         assert!(ok[0] != "ok:0", "no ok signal: {ok:?}");
@@ -1091,7 +1867,12 @@ function onStart() {
         let source = "function onStart( {";
         let recorder = Arc::new(Recorder::default());
         let (tx, rx) = std::sync::mpsc::channel();
-        let mut worker = spawn(plugin(source, &[]), recorder.clone(), tx, Duration::from_secs(5));
+        let mut worker = spawn(
+            plugin(source, &[]),
+            recorder.clone(),
+            tx,
+            Duration::from_secs(5),
+        );
         let (_, errors) = drain(&rx, Duration::from_millis(500));
         assert!(
             errors.iter().any(|error| error.contains("加载失败")),

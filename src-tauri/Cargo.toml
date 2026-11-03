@@ -1,6 +1,6 @@
 [package]
 name = "coconut-app"
-version = "0.1.1"
+version = "0.2.0"
 description = "椰果工具箱启动器"
 authors = ["Coconut"]
 edition = "2021"

@@ -85,18 +85,18 @@ https://github.com/d4rkOfficial/wuwa-afyg-tool/releases/latest/download/toolbox.
 coconut-app\src-tauri\toolbox-static     构建时被 build.rs 打进 exe
 ~~~
 
-<code>dist\</code> 里只有 <code>coconut-app.exe</code> 一个文件（10.29 MB），不再复制一份
+<code>dist\</code> 里只有 <code>coconut-app.exe</code> 一个文件（15.69 MB），不再复制一份
 <code>toolbox-static</code> —— 静态产物已经内嵌在 exe 里（见「单文件便携」）。
 如果确实想在 exe 同级放一份可热替换的静态目录，仍然会被优先使用。
 
 当前内置版本：
 
 ~~~text
-commit   bf3061e407f9b344f6aa48fa734a95b7c81803ed
-短 sha    bf3061e（manifest.json 里就是它）
-builtAt  2026-10-20T14:19:35.190Z
-文件     129 个 / 7.88 MB
-来源     Release toolbox-bf3061e407f9b344f6aa48fa734a95b7c81803ed
+commit   b8bb16692d2ddaa2380170379fe1f5cb80d9d59a
+短 sha    b8bb166（manifest.json 里就是它）
+builtAt  2026-11-03T14:24:21.455Z
+文件     134 个 / 7.91 MB
+来源     wuwa-afyg-tool 本地静态构建
 ~~~
 
 > <code>manifest.json</code> 里存的是**短 sha**：检查更新时是拿它和 GitHub Release 的
@@ -265,7 +265,7 @@ dist\coconut-app.exe
 
 <code>coconut-app.exe</code> 把工具箱静态产物（<code>toolbox.tar.gz</code>）**编进了二进制**：
 <code>build.rs</code> 在构建时把 <code>toolbox-static/</code> 打成一个 gzip 包放进 <code>OUT_DIR</code>，
-运行时用 <code>include_bytes!</code> 读取。exe 因此从 ~6 MB 变成 ~10.8 MB。
+运行时用 <code>include_bytes!</code> 读取。exe 因此从 ~6 MB 变成 ~16 MB。
 
 首次启动时静态目录按这个顺序准备（任何一步成功就停）：
 

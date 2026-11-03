@@ -1,7 +1,7 @@
 {
   "name": "coconut-app",
   "private": true,
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "椰果工具箱启动器：本地安装、更新、WS 接管与免费模型配置同步",
   "type": "module",
   "scripts": {

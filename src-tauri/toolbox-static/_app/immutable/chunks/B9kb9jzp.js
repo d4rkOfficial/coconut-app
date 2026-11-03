@@ -1,0 +1,1 @@
+function e(e=300){let t=document.getElementById(`splash`);if(!t)return;let n=window.__splashStart??performance.now(),r=performance.now()-n,i=Math.max(0,e-r);setTimeout(()=>{t.classList.add(`splash-hidden`),setTimeout(()=>t.remove(),500)},i)}export{e as t};

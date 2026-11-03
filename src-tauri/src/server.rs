@@ -2542,7 +2542,7 @@ async fn update_toolbox_inner(state: &Arc<ServerState>) -> Result<Value, String>
 
 pub async fn start(static_dir: PathBuf, data_dir: PathBuf) -> Result<Arc<ServerState>, String> {
     let client = reqwest::Client::builder()
-        .user_agent("coconut-app/0.1.1")
+        .user_agent("coconut-app/0.2.0")
         .timeout(Duration::from_secs(180))
         .build()
         .map_err(|error| error.to_string())?;

@@ -188,6 +188,8 @@ pub struct Plugins {
     bridge: Arc<Mutex<Option<Arc<dyn PluginBridge>>>>,
     /// 最近一次「工具箱页面就绪」的信息：轮询中途起的新插件要补一次 hello
     last_hello: Arc<Mutex<Option<Value>>>,
+    /// 每个插件已经收到过哪个会话的 hello（引擎侧去重，插件不用自己判重）
+    hello_seen: Arc<Mutex<HashMap<String, String>>>,
 }
 
 /// 处理一个插件的信号（成功清零、出错计数、连续 3 次自动停用）。
@@ -265,6 +267,7 @@ impl Plugins {
             log: LogFile::new(data_dir.join("logs").join("plugins.log")),
             bridge: Arc::new(Mutex::new(None)),
             last_hello: Arc::new(Mutex::new(None)),
+            hello_seen: Arc::new(Mutex::new(HashMap::new())),
         };
         plugins.refresh_catalog();
         plugins
@@ -582,9 +585,16 @@ impl Plugins {
         self.log_line(format!("[plugin] {id} 已启动"));
         let last_hello = self.last_hello.lock().ok().and_then(|slot| slot.clone());
         if let Some(info) = last_hello {
-            if let Ok(running) = self.workers.lock() {
-                if let Some(worker) = running.get(id) {
-                    worker.hello(info);
+            let session = info
+                .get("session")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_string();
+            if self.mark_hello(id, &session) {
+                if let Ok(running) = self.workers.lock() {
+                    if let Some(worker) = running.get(id) {
+                        worker.hello(info);
+                    }
                 }
             }
         }
@@ -611,15 +621,74 @@ impl Plugins {
     }
 
     /// 工具箱页面就绪：广播给所有插件。
+    ///
+    /// `hello` 对每个插件、每个会话**只派发一次**：引擎那侧有 4 秒重发，
+    /// 这里按 session id 去重，插件不需要自己判重。重载后是新会话，会正常再派一次。
     pub fn hello(&self, info: Value) {
+        let session = info
+            .get("session")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string();
         if let Ok(mut slot) = self.last_hello.lock() {
             *slot = Some(info.clone());
         }
+        let Ok(workers) = self.workers.lock() else {
+            return;
+        };
+        for (id, worker) in workers.iter() {
+            if !self.mark_hello(id, &session) {
+                continue;
+            }
+            worker.hello(info.clone());
+        }
+    }
+
+    /// 工具箱页面会话结束（关闭 / 重载 / 回到启动器）。
+    pub fn bye(&self, info: Value) {
+        // 会话没了，上一次的 hello 也不能再拿去重放（否则新起的插件会对着死会话干活）
+        if let Ok(mut slot) = self.last_hello.lock() {
+            *slot = None;
+        }
+        if let Ok(mut seen) = self.hello_seen.lock() {
+            seen.clear();
+        }
         if let Ok(workers) = self.workers.lock() {
             for worker in workers.values() {
-                worker.hello(info.clone());
+                worker.bye(info.clone());
             }
         }
+    }
+
+    /// 一次异步工具调用的结果：投递给对应插件线程。
+    pub fn tool_result(&self, plugin: &str, payload: Value) {
+        if let Ok(workers) = self.workers.lock() {
+            if let Some(worker) = workers.get(plugin) {
+                worker.tool_result(payload);
+            }
+        }
+    }
+
+    /// 页面送来一帧 rAF：转给宿主去分发给订阅了 `requestAnimationFrame` 的插件。
+    pub fn raf_tick(&self, ts: f64) {
+        if let Some(bridge) = self.bridge() {
+            bridge.raf_tick(ts);
+        }
+    }
+
+    /// 记录「这个插件已经收到过这个会话的 hello」。返回 true 表示这次要派发。
+    fn mark_hello(&self, id: &str, session: &str) -> bool {
+        if session.is_empty() {
+            return true;
+        }
+        let Ok(mut seen) = self.hello_seen.lock() else {
+            return true;
+        };
+        if seen.get(id).map(String::as_str) == Some(session) {
+            return false;
+        }
+        seen.insert(id.to_string(), session.to_string());
+        true
     }
 
     /// 原始 WS 帧：只发给声明了 `debug` 权限的插件。

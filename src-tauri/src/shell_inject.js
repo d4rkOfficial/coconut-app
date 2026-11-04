@@ -497,6 +497,78 @@
   let overlaySeq = 0;
   const overlays = new Map();
 
+  // 浮层 html 是「数据」，由引擎净化后再插进页面：
+  // 去掉 <script>/<iframe>/<object>/<embed>/<base>/<link>/<meta>、所有 on* 事件属性、
+  // 注释节点，以及 javascript: / data:text/html 这类 URL。
+  // 插件要在页面里执行代码必须走 overlay 的 script 字段（需要 dom 权限）。
+  const DROP_TAGS = {
+    script: 1,
+    iframe: 1,
+    object: 1,
+    embed: 1,
+    base: 1,
+    link: 1,
+    meta: 1,
+  };
+
+  const sanitizeOverlayHtml = (html) => {
+    const template = document.createElement("template");
+    template.innerHTML = String(html || "");
+    const clean = (node) => {
+      for (const child of Array.from(node.childNodes)) {
+        if (child.nodeType === 8) {
+          child.remove();
+          continue;
+        }
+        if (child.nodeType !== 1) continue;
+        if (DROP_TAGS[child.tagName.toLowerCase()]) {
+          child.remove();
+          continue;
+        }
+        for (const attribute of Array.from(child.attributes)) {
+          const name = attribute.name.toLowerCase();
+          if (name.indexOf("on") === 0 || name === "srcdoc") {
+            child.removeAttribute(attribute.name);
+            continue;
+          }
+          if (/^\s*(javascript|data:text\/html)/i.test(attribute.value || "")) {
+            child.removeAttribute(attribute.name);
+          }
+        }
+        clean(child);
+      }
+    };
+    clean(template.content);
+    return template.innerHTML;
+  };
+
+  /** 跑浮层的 script：传函数源码时调用它（参数是浮层根节点），返回值当销毁回调。 */
+  const runOverlayScript = (root, source) => {
+    const text = String(source || "").trim();
+    if (!text) return null;
+    let factory = null;
+    try {
+      factory = new Function("return (" + text + ");")();
+    } catch (error) {
+      factory = null;
+    }
+    if (typeof factory === "function") {
+      try {
+        const result = factory(root);
+        return typeof result === "function" ? result : null;
+      } catch (error) {
+        console.error("[coconut-shell] 浮层 script 执行失败：", error);
+        return null;
+      }
+    }
+    try {
+      new Function(text)();
+    } catch (error) {
+      console.error("[coconut-shell] 浮层 script 执行失败：", error);
+    }
+    return null;
+  };
+
   window.__coconutOverlayRegister = (plugin, payload) => {
     const options = payload && typeof payload === "object" ? payload : {};
     const id = ++overlaySeq;
@@ -515,11 +587,17 @@
     if (options.html) {
       const body = document.createElement("div");
       body.style.cssText = "position:absolute;inset:0;pointer-events:none";
-      body.innerHTML = String(options.html);
+      body.innerHTML = sanitizeOverlayHtml(options.html);
       root.appendChild(body);
     }
     document.body.appendChild(root);
-    overlays.set(id, { root: root, plugin: String(plugin || ""), visible: true });
+    const cleanup = options.script ? runOverlayScript(root, options.script) : null;
+    overlays.set(id, {
+      root: root,
+      plugin: String(plugin || ""),
+      visible: true,
+      cleanup: cleanup,
+    });
     return id;
   };
 
@@ -535,6 +613,11 @@
     const key = Number(id);
     const entry = overlays.get(key);
     if (!entry) return false;
+    try {
+      if (entry.cleanup) entry.cleanup();
+    } catch (error) {
+      /* 清理回调自己抛错不影响删除 */
+    }
     entry.root.remove();
     overlays.delete(key);
     return true;
@@ -557,6 +640,11 @@
     const name = String(plugin || "");
     for (const [id, entry] of overlays.entries()) {
       if (entry.plugin === name) {
+        try {
+          if (entry.cleanup) entry.cleanup();
+        } catch (error) {
+          /* 忽略 */
+        }
         entry.root.remove();
         overlays.delete(id);
       }
@@ -569,6 +657,37 @@
     queue.push(text);
     if (queue.length > 64) queue.shift();
     flush();
+  };
+
+  // —— 页面 rAF 泵 ——
+  // 插件层的 Coconut.ui.requestAnimationFrame 靠这里驱动：只有真有插件订阅时才跑，
+  // 按 rate 合并后把时间戳回传给启动器，再由启动器分发给订阅者。
+  // 注意这是「低频泵」，不是给视觉动画用的——视觉动画直接写在注入的页面脚本里。
+  let rafHandle = 0;
+  let rafLast = 0;
+  let rafInterval = 1000 / 30;
+
+  const rafLoop = (now) => {
+    rafHandle = requestAnimationFrame(rafLoop);
+    if (now - rafLast < rafInterval) return;
+    rafLast = now;
+    sendRaw({ type: "raf", ts: Math.round(now) });
+  };
+
+  window.__coconutRafStart = (rate) => {
+    const hz = Number(rate);
+    if (Number.isFinite(hz) && hz > 0) rafInterval = 1000 / Math.min(60, Math.max(1, hz));
+    if (rafHandle) return true;
+    rafLast = 0;
+    rafHandle = requestAnimationFrame(rafLoop);
+    return true;
+  };
+
+  window.__coconutRafStop = () => {
+    if (rafHandle) cancelAnimationFrame(rafHandle);
+    rafHandle = 0;
+    rafLast = 0;
+    return true;
   };
 
   // —— 挂载 / 自愈 ——

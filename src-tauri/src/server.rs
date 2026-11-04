@@ -966,6 +966,11 @@ async fn handle_socket(socket: WebSocket, state: Arc<ServerState>) {
                 let reply = state.window_action(&value).await;
                 let _ = tx.send(reply.to_string());
             }
+            "raf" => {
+                // 沉浸式外壳送来的一帧：分发给订阅了 requestAnimationFrame 的插件
+                let ts = value["ts"].as_f64().unwrap_or(0.0);
+                state.plugins.raf_tick(ts);
+            }
             "result" => {
                 if let Some(id) = value["id"].as_str() {
                     if let Some(tx) = session.pending.lock().await.remove(id) {
@@ -980,6 +985,16 @@ async fn handle_socket(socket: WebSocket, state: Arc<ServerState>) {
     session.closed.store(true, Ordering::SeqCst);
     state.ws.remove(&session.id).await;
     state.log("ws", &format!("会话关闭 {}", session.id));
+    // 页面会话真的结束了：插件该收拾浮层了。
+    // 注意只对「有 run_js 的页面会话」派发一次，沉浸式外壳自己那条连接不算。
+    {
+        let mut slot = state.page_session.write().await;
+        if slot.as_ref().map(|page| page.id.as_str()) == Some(session.id.as_str()) {
+            *slot = None;
+            drop(slot);
+            state.plugins.bye(json!({ "session": session.id }));
+        }
+    }
     writer.abort();
 }
 
@@ -1241,11 +1256,95 @@ impl PluginBridge for ServerBridge {
         })
     }
 
+    /// `Coconut.toolbox.runJs` 用：保留页面返回值的类型（字符串就是字符串，
+    /// 数字就是数字），不再经过一次无差别字符串化。
+    fn run_js_value(&self, _plugin: &str, code: &str) -> Result<Value, String> {
+        let state = self.state()?;
+        run_js_value(self, &state, code)
+    }
+
+    /// 关掉工具箱页面，回到启动器首页。
+    fn toolbox_exit(&self, _plugin: &str) -> Result<(), String> {
+        let state = self.state()?;
+        let window = state
+            .main_window()
+            .ok_or_else(|| "找不到主窗口".to_string())?;
+        let launcher = window
+            .app_handle()
+            .state::<crate::LauncherUrl>()
+            .0
+            .lock()
+            .map(|url| url.clone())
+            .unwrap_or_default();
+        if launcher.is_empty() {
+            return Err("还没有记录启动器首页地址".to_string());
+        }
+        let target = tauri::Url::parse(&launcher)
+            .map_err(|error| format!("启动器地址无效：{error}"))?;
+        state.log("plugin", "回到启动器");
+        window
+            .navigate(target)
+            .map_err(|error| format!("回到启动器失败：{error}"))
+    }
+
     fn call_tool(&self, _plugin: &str, tool: &str, args: &str) -> Result<String, String> {
         let state = self.state()?;
         let args = serde_json::from_str::<Value>(args).unwrap_or_else(|_| json!({}));
         let value = self.exec(&state, tool, args)?;
         Ok(value.to_string())
+    }
+
+    /// `Coconut.tools.call`：立刻返回，结果通过 `Plugins::tool_result` 送回插件线程。
+    fn tool_call_begin(
+        &self,
+        plugin: &str,
+        token: u64,
+        tool: &str,
+        args: &str,
+    ) -> Result<(), String> {
+        let state = self.state()?;
+        let args = serde_json::from_str::<Value>(args).unwrap_or_else(|_| json!({}));
+        let tool = tool.to_string();
+        let plugin = plugin.to_string();
+        bridge_runtime().spawn(async move {
+            let session = state.page_session.read().await.clone();
+            let result = match session {
+                Some(session) => session.exec(&tool, args, Duration::from_secs(30)).await,
+                None => Err("工具箱页面没有打开".to_string()),
+            };
+            let payload = match result {
+                Ok(value) => json!({ "token": token, "ok": true, "result": value }),
+                Err(error) => json!({ "token": token, "ok": false, "error": error }),
+            };
+            state.plugins.tool_result(&plugin, payload);
+        });
+        Ok(())
+    }
+
+    /// `Coconut.ui.requestAnimationFrame`：订阅数 0→1 时让页面开始跑 rAF 循环。
+    fn raf_subscribe(&self, plugin: &str, on: bool) -> Result<usize, String> {
+        let state = self.state()?;
+        let count = self.servers.raf_subscribe(plugin, on);
+        if count == 1 && on {
+            // 页面还没打开时这里会失败：让插件看清错误（它在 onHello 里重试就行），
+            // 而不是「订阅成功但永远收不到帧」。
+            run_js_value(
+                self,
+                &state,
+                "return globalThis.__coconutRafStart ? globalThis.__coconutRafStart(30) : false",
+            )?;
+        } else if count == 0 && !on {
+            let _ = run_js_value(
+                self,
+                &state,
+                "return globalThis.__coconutRafStop ? globalThis.__coconutRafStop() : false",
+            );
+        }
+        Ok(count)
+    }
+
+    fn raf_tick(&self, ts: f64) {
+        self.servers.raf_tick(ts);
     }
 
     fn fetch(&self, _plugin: &str, url: &str, opts: &str) -> Result<String, String> {
@@ -1301,13 +1400,13 @@ impl PluginBridge for ServerBridge {
         .to_string())
     }
 
-    fn ui_overlay(&self, plugin: &str, html: &str, css: &str) -> Result<u32, String> {
+    fn ui_overlay(&self, plugin: &str, html: &str, css: &str, script: &str) -> Result<u32, String> {
         let state = self.state()?;
         // run_js 的 code 是「函数体」：必须自己 return，工具箱才会把值带回来。
         let script = format!(
             "return globalThis.__coconutOverlayRegister ? globalThis.__coconutOverlayRegister({}, {}) : 0",
             json!(plugin),
-            json!({ "html": html, "css": css })
+            json!({ "html": html, "css": css, "script": script })
         );
         let value = run_js_value(self, &state, &script)?;
         let id = value
@@ -1435,6 +1534,8 @@ impl PluginBridge for ServerBridge {
 
     fn server_close_all(&self, plugin: &str) {
         self.servers.close_all(plugin);
+        // 插件停用 / 重载：别再让页面为它空转
+        self.servers.raf_clear(plugin);
     }
 
     fn server_respond(

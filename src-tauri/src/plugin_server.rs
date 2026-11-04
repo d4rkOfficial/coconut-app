@@ -50,6 +50,8 @@ struct Inner {
     sockets: Mutex<HashMap<(u64, u64), SocketHandle>>,
     clients: Mutex<HashMap<u64, ClientHandle>>,
     events: Mutex<Vec<(String, Value)>>,
+    /// 订阅了页面 rAF 的插件（`Coconut.ui.requestAnimationFrame`）
+    raf: Mutex<std::collections::HashSet<String>>,
 }
 
 struct ServerEntry {
@@ -101,6 +103,38 @@ impl PluginServers {
         if let Ok(mut events) = self.inner.events.lock() {
             events.push((plugin.to_string(), event));
         }
+    }
+
+    /// 订阅 / 退订页面 rAF。返回订阅者数量（0→1 时宿主才需要真正启动页面循环）。
+    pub fn raf_subscribe(&self, plugin: &str, on: bool) -> usize {
+        let Ok(mut set) = self.inner.raf.lock() else {
+            return 0;
+        };
+        if on {
+            set.insert(plugin.to_string());
+        } else {
+            set.remove(plugin);
+        }
+        set.len()
+    }
+
+    /// 页面送来一帧：投递给每个订阅者（走 poll，和 http / ws 事件同一条队列）。
+    pub fn raf_tick(&self, ts: f64) {
+        let plugins: Vec<String> = match self.inner.raf.lock() {
+            Ok(set) => set.iter().cloned().collect(),
+            Err(_) => return,
+        };
+        for plugin in plugins {
+            self.push_event(
+                &plugin,
+                json!({ "type": "raf", "source": "raf", "ts": ts }),
+            );
+        }
+    }
+
+    /// 插件停用时清掉订阅，避免页面还在空转。
+    pub fn raf_clear(&self, plugin: &str) -> usize {
+        self.raf_subscribe(plugin, false)
     }
 
     fn next_server(&self) -> u64 {

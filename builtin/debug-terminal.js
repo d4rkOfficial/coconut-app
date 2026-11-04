@@ -8,7 +8,7 @@
 // 导出之后以插件目录里的文件为准（可以直接改 / 删 / 覆盖）。
 //
 // 实现上不新增公开 API：
-//   - DOM 层用 Coconut.runJs；
+//   - DOM 层用 Coconut.toolbox.runJs（字符串 / 函数对象都行，函数会带参数送进页面）；
 //   - 插件层用插件线程自己的 eval；
 //   - console.* 由启动器内部 /debug/console 环形缓冲提供，终端用 Coconut.fetch 轮询。
 
@@ -23,11 +23,6 @@ const logError = (error) => {
   try {
     Coconut.log('调试终端：' + String((error && error.stack) || error));
   } catch (ignored) {}
-};
-
-const pageCall = (fn, ...args) => {
-  const list = args.length ? args.map((arg) => JSON.stringify(arg)).join(', ') : '';
-  return `return (${String(fn).trim()})(${list});`;
 };
 
 const formatValue = (value) => {
@@ -55,7 +50,7 @@ const clearPage = () => {
 };
 
 const pollPage = () => {
-  if (!window.__coconutTerm) return JSON.stringify({ commands: [], visible: false });
+  if (!window.__coconutTerm) return { commands: [], visible: false };
   return window.__coconutTerm.poll();
 };
 
@@ -357,7 +352,7 @@ const installTerminal = () => {
     feed,
     remove,
     visible: () => state.visible,
-    poll: () => JSON.stringify({ commands: state.commands.splice(0), visible: state.visible }),
+    poll: () => ({ commands: state.commands.splice(0), visible: state.visible }),
   };
   document.addEventListener('keydown', onGlobalKey, true);
   document.body.appendChild(host);
@@ -371,20 +366,21 @@ const removeTerminal = () => {
   return true;
 };
 
-async function install() {
+/** 挂载 / 重挂页面侧的终端：直接传函数对象，引擎负责序列化源码。 */
+const install = () => {
   try {
-    await Coconut.runJs(pageCall(installTerminal));
+    Coconut.toolbox.runJs(installTerminal);
     ready = true;
   } catch (error) {
     ready = false;
     if (!/页面还没打开|WS 连接已关闭|WS 发送失败/.test(String(error))) logError(error);
   }
-}
+};
 
 const feed = (text) => {
   if (!ready) return;
   try {
-    Coconut.runJs(pageCall(feedPage, text));
+    Coconut.toolbox.runJs(feedPage, text);
   } catch (error) {
     ready = false;
   }
@@ -393,19 +389,20 @@ const feed = (text) => {
 const clear = () => {
   if (!ready) return;
   try {
-    Coconut.runJs(pageCall(clearPage));
+    Coconut.toolbox.runJs(clearPage);
   } catch (error) {
     ready = false;
   }
 };
 
 const runDom = (code) => {
+  // 用户当场敲的代码没法包成函数对象，只能给字符串（函数体，自己 return）。
   const wrapped = `return (async () => { const __value = await (${code}); return typeof __value === 'string' ? __value : JSON.stringify(__value); })()`;
   try {
-    feed(Coconut.runJs(wrapped));
+    feed(formatValue(Coconut.toolbox.runJs(wrapped)));
   } catch (error) {
     try {
-      feed(Coconut.runJs(`return (async () => { ${code}\n })()`));
+      feed(formatValue(Coconut.toolbox.runJs(`return (async () => { ${code}\n })()`)));
     } catch (inner) {
       feed(String((inner && inner.message) || inner));
     }
@@ -458,15 +455,15 @@ const pollConsole = () => {
   feed(text);
 };
 
-const tick = async () => {
+const tick = () => {
   if (ticking) return;
   ticking = true;
   try {
-    if (!ready) await install();
+    if (!ready) install();
     if (!ready) return;
-    const raw = Coconut.runJs(pageCall(pollPage));
-    const data = JSON.parse(raw);
-    for (const command of data.commands || []) runCommand(command);
+    // pollPage 现在直接返回对象，不用再 JSON.parse 一次
+    const data = Coconut.toolbox.runJs(pollPage);
+    for (const command of (data && data.commands) || []) runCommand(command);
     pollConsole();
   } catch (error) {
     if (/页面还没打开|WS 连接已关闭|WS 发送失败/.test(String(error))) ready = false;
@@ -476,27 +473,37 @@ const tick = async () => {
   }
 };
 
+const stopPolling = () => {
+  if (pollTimer) {
+    Coconut.clearInterval(pollTimer);
+    pollTimer = null;
+  }
+};
+
 async function onStart() {
   Coconut.log('调试终端已加载（' + Coconut.plugin.version + '）');
 }
 
 async function onHello() {
-  await install();
+  install();
   if (!pollTimer) {
     pollTimer = Coconut.setInterval(() => {
-      void tick();
+      tick();
     }, 150);
   }
-  await tick();
+  tick();
+}
+
+/** 页面会话结束：终端跟着页面一起没了，这里只收插件侧的东西。 */
+async function onBye() {
+  stopPolling();
+  ready = false;
 }
 
 async function onStop() {
-  if (pollTimer) {
-    Coconut.clearInterval(pollTimer);
-    pollTimer = null;
-  }
+  stopPolling();
   try {
-    Coconut.runJs(pageCall(removeTerminal));
+    Coconut.toolbox.runJs(removeTerminal);
   } catch (error) {
     /* 页面可能已经关闭 */
   }
@@ -505,4 +512,5 @@ async function onStop() {
 
 globalThis.onStart = onStart;
 globalThis.onHello = onHello;
+globalThis.onBye = onBye;
 globalThis.onStop = onStop;

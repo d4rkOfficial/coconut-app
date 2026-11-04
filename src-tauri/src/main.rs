@@ -22,6 +22,9 @@ struct AppServer(Mutex<Option<Arc<ServerState>>>);
 
 struct Launched(AtomicBool);
 
+/// 启动器首页地址：打开工具箱前记下来，`Coconut.toolbox.exit` 靠它退回去。
+pub struct LauncherUrl(pub Mutex<String>);
+
 #[derive(Clone, Serialize)]
 struct Bootstrap {
     data_dir: String,
@@ -448,6 +451,12 @@ fn open_toolbox_window(
         state.plugins.begin_log_session("打开工具箱");
     }
     let parsed = tauri::Url::parse(&url).map_err(|error| format!("无效的工具箱地址：{error}"))?;
+    // 退回启动器要用的地址：当前窗口还停在启动器页面上，现在记最准。
+    if let Ok(launcher) = window.url() {
+        if let Ok(mut slot) = app.state::<LauncherUrl>().0.lock() {
+            *slot = launcher.to_string();
+        }
+    }
     window
         .set_title("椰果工具箱")
         .map_err(|error| format!("无法修改窗口标题：{error}"))?;
@@ -877,6 +886,7 @@ fn main() {
     let app = tauri::Builder::default()
         .manage(AppServer(Mutex::new(None)))
         .manage(Launched(AtomicBool::new(false)))
+        .manage(LauncherUrl(Mutex::new(String::new())))
         .manage(Uninstall(Arc::new(
             Mutex::new(UninstallProgress::default()),
         )))

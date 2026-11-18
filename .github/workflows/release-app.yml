@@ -5,10 +5,10 @@
 #   2. Actions 页面手动 workflow_dispatch → 只构建并上传 artifact（不发版）
 #
 # 平台矩阵：
-#   windows-latest  → MSI 安装包 + 单文件便携 exe（WebView2 由系统提供）
-#   macos-latest    → Apple Silicon（aarch64）.app / .dmg（未签名）
-#   macos-13        → Intel（x86_64）.app / .dmg（未签名）
-#   ubuntu-22.04    → x86_64 .deb + .AppImage
+#   windows-latest    → MSI 安装包 + 单文件便携 exe（WebView2 由系统提供）
+#   macos-latest      → Apple Silicon（aarch64）.dmg（未签名）
+#   macos-15-intel    → Intel（x86_64）.dmg（未签名；macos-13 已被 GitHub 退役）
+#   ubuntu-22.04      → x86_64 .deb + .AppImage（glibc 2.35，兼容面比 24.04 广）
 #
 # 产物列表见每个 matrix 项的 artifacts 字段，release job 统一收集上传。
 
@@ -37,10 +37,11 @@ jobs:
             os: windows-latest
             target: x86_64-pc-windows-msvc
             bundles: msi
-            # 每行 "glob => 发布用文件名"：发布资产用固定 ASCII 名，方便 share 站写死直链
+            # 每行 "glob => 发布用文件名"：发布资产用固定 ASCII 名，方便 share 站写死直链。
+            # 注意带 --target 构建，产物落在 target/<triple>/release 下。
             artifacts: |
-              src-tauri/target/release/bundle/msi/*.msi => coconut-app-windows-x64.msi
-              src-tauri/target/release/coconut-app.exe => coconut-app-windows-x64.exe
+              src-tauri/target/x86_64-pc-windows-msvc/release/bundle/msi/*.msi => coconut-app-windows-x64.msi
+              src-tauri/target/x86_64-pc-windows-msvc/release/coconut-app.exe => coconut-app-windows-x64.exe
           - label: macOS Apple Silicon
             os: macos-latest
             target: aarch64-apple-darwin
@@ -48,7 +49,7 @@ jobs:
             artifacts: |
               src-tauri/target/aarch64-apple-darwin/release/bundle/dmg/*.dmg => coconut-app-macos-aarch64.dmg
           - label: macOS Intel
-            os: macos-13
+            os: macos-15-intel
             target: x86_64-apple-darwin
             bundles: app,dmg
             artifacts: |
@@ -68,7 +69,7 @@ jobs:
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 22
           cache: npm
 
       - name: Install frontend dependencies
@@ -84,16 +85,26 @@ jobs:
         run: |
           set -euo pipefail
           BASE="https://github.com/d4rkOfficial/wuwa-afyg-tool/releases/latest/download"
-          curl -fsSL --retry 3 --connect-timeout 20 -o toolbox.tar.gz "$BASE/toolbox.tar.gz"
-          curl -fsSL --retry 3 --connect-timeout 20 -o toolbox-manifest.json "$BASE/manifest.json"
-          mkdir -p src-tauri/toolbox-static
-          tar -xzf toolbox.tar.gz -C src-tauri/toolbox-static
-          cp toolbox-manifest.json src-tauri/toolbox-static/manifest.json
-          test -f src-tauri/toolbox-static/index.html || {
-            echo "::error::下载的工具箱静态包缺少 index.html"
+          curl -fsSL --retry 3 --retry-delay 2 --connect-timeout 20 -o toolbox.tar.gz "$BASE/toolbox.tar.gz"
+          curl -fsSL --retry 3 --retry-delay 2 --connect-timeout 20 -o toolbox-manifest.json "$BASE/manifest.json"
+
+          # 压缩包既可能是「根目录直接是 index.html」，也可能多包一层目录，两种都兼容
+          rm -rf /tmp/tbx && mkdir -p /tmp/tbx
+          tar -xzf toolbox.tar.gz -C /tmp/tbx
+          index=$(find /tmp/tbx -maxdepth 3 -name index.html | sort | head -1)
+          if [ -z "$index" ]; then
+            echo "::error::下载的工具箱静态包里找不到 index.html"
             exit 1
-          }
-          echo "内置工具箱版本：$(cat toolbox-manifest.json)"
+          fi
+          root=$(dirname "$index")
+          rm -rf src-tauri/toolbox-static
+          mkdir -p src-tauri/toolbox-static
+          cp -a "$root"/. src-tauri/toolbox-static/
+          cp toolbox-manifest.json src-tauri/toolbox-static/manifest.json
+
+          test -f src-tauri/toolbox-static/index.html
+          echo "内置工具箱版本：$(tr -d '\n' < toolbox-manifest.json)"
+          echo "静态文件数量：$(find src-tauri/toolbox-static -type f | wc -l)"
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable

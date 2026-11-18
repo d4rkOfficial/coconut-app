@@ -79,29 +79,34 @@ https://github.com/d4rkOfficial/wuwa-afyg-tool/releases/latest/download/toolbox.
 
 > 首次启用时，在仓库 <code>Settings → Actions → General → Workflow permissions</code> 选择 <code>Read and write permissions</code>，否则 workflow 创建 Release 会 403。
 
-启动器内置一份静态产物：
+启动器构建时会内置一份静态产物：
 
 ~~~text
-coconut-app\src-tauri\toolbox-static     构建时被 build.rs 打进 exe
+coconut-app\src-tauri\toolbox-static     不入库，构建前由 GitHub Actions 从最新 Release 拉取
+~~~
+
+发布流程：<code>release-app.yml</code> 在每次构建前下载 <code>wuwa-afyg-tool</code> 的
+<code>toolbox.tar.gz</code> + <code>manifest.json</code> 解压到 <code>src-tauri/toolbox-static/</code>，
+再由 <code>build.rs</code> 打进 exe。所以每个椰果启动器版本内置的都是**构建时最新的工具箱**，
+仓库里不再维护这份 8 MB 的静态目录（已加入 <code>.gitignore</code>）。
+
+本地构建时如果想复现 CI 行为，先手工执行：
+
+~~~bash
+BASE="https://github.com/d4rkOfficial/wuwa-afyg-tool/releases/latest/download"
+curl -fsSL -o toolbox.tar.gz "$BASE/toolbox.tar.gz"
+curl -fsSL -o manifest.json "$BASE/manifest.json"
+mkdir -p src-tauri/toolbox-static
+tar -xzf toolbox.tar.gz -C src-tauri/toolbox-static
+cp manifest.json src-tauri/toolbox-static/manifest.json
 ~~~
 
 <code>dist\</code> 里只有 <code>coconut-app.exe</code> 一个文件（15.69 MB），不再复制一份
 <code>toolbox-static</code> —— 静态产物已经内嵌在 exe 里（见「单文件便携」）。
 如果确实想在 exe 同级放一份可热替换的静态目录，仍然会被优先使用。
 
-当前内置版本：
-
-~~~text
-commit   b8bb16692d2ddaa2380170379fe1f5cb80d9d59a
-短 sha    b8bb166（manifest.json 里就是它）
-builtAt  2026-11-03T14:24:21.455Z
-文件     134 个 / 7.91 MB
-来源     wuwa-afyg-tool 本地静态构建
-~~~
-
 > <code>manifest.json</code> 里存的是**短 sha**：检查更新时是拿它和 GitHub Release 的
 > <code>manifest.json</code> 逐字比较的，写全 40 位会让启动器永远认为「有新版本」。
-> 全 sha 只作为人工核对记录写在这里。
 
 便携版仍可直接替换 <code>dist/toolbox-static</code>，无需重新编译 Rust。
 
@@ -308,6 +313,33 @@ node node_modules/@tauri-apps/cli/tauri.js build
 
 如果使用 <code>pnpm dev</code> 遇到 Tauri CLI 参数错误，直接使用上面的 <code>node ... tauri.js</code>。
 
+### 三平台自动构建（GitHub Actions）
+
+<code>.github/workflows/release-app.yml</code>：push <code>v*</code> tag（或 Actions 页面手动
+<code>workflow_dispatch</code>）会跑四路构建：
+
+| Runner | 目标 | 产物 |
+| --- | --- | --- |
+| windows-latest | x86_64-pc-windows-msvc | MSI 安装包 + 单文件便携 exe |
+| macos-latest | aarch64-apple-darwin | .app / .dmg（未签名） |
+| macos-13 | x86_64-apple-darwin | .app / .dmg（未签名） |
+| ubuntu-22.04 | x86_64-unknown-linux-gnu | .deb + .AppImage |
+
+- Release 资产统一用固定 ASCII 文件名，方便分享站写死直链：
+
+  | 资产名 | 平台 |
+  | --- | --- |
+  | <code>coconut-app-windows-x64.msi</code> / <code>coconut-app-windows-x64.exe</code> | Windows x64 |
+  | <code>coconut-app-macos-aarch64.dmg</code> / <code>coconut-app-macos-x64.dmg</code> | macOS |
+  | <code>coconut-app-linux-x64.deb</code> / <code>coconut-app-linux-x64.AppImage</code> | Linux x64 |
+
+- tag 构建会自动创建 GitHub Release 并附上全部产物；手动触发只上传 workflow artifact；
+- 构建前会先跑 <code>npm run builtin</code> 打包内置插件（现在 builtin/ 下没有子目录时自动跳过）；
+- 发版流程：改 <code>package.json</code> / <code>src-tauri/tauri.conf.json</code> /
+  <code>src-tauri/Cargo.toml</code> 三处版本号 → <code>git tag v0.3.1 && git push --tags</code>；
+- 仓库 <code>Settings → Actions → General → Workflow permissions</code> 需要选
+  <code>Read and write permissions</code>，否则创建 Release 会 403。
+
 ### MSI 安装包外观
 
 安装界面用了自定义位图（WiX 标准尺寸，24 位 BMP）：
@@ -378,13 +410,10 @@ tar -czf toolbox.tar.gz -C build .
 ~~~
 
 push 到 <code>main</code> 后由 <code>.github/workflows/release-toolbox.yml</code> 自动完成，无需再同步到独立仓库。
+椰果启动器的 <code>release-app.yml</code> 会在构建前自动拉取该 Release 的最新静态包，
+本地目录 <code>src-tauri/toolbox-static/</code> 是构建产物，不提交到 Git。
 
-如果要更新启动器内置的兜底产物，把 <code>build/</code> 内容同步到：
-
-- <code>coconut-app/src-tauri/toolbox-static/</code>
-
-<code>manifest.json</code> 跟着一起换。重新 <code>tauri build</code> 后 <code>build.rs</code>
-会自动把这份目录重新打进 exe（<code>dist\</code> 里不需要再放一份）。
+如果要更新启动器内置的兜底产物，不需要手动改本仓库文件：重新打 tag 触发 release-app.yml 即可。
 
 ---
 
@@ -526,6 +555,7 @@ async function onHello() {
 | <code>ui</code> | <code>Coconut.ui</code> | 浮层（注册 / 显隐 / 移除）+ 页面 CSS 注入（需要同时有 <code>dom</code>） |
 | <code>server</code> | <code>Coconut.http</code> | 开本地 HTTP / WebSocket 服务（事件对象） |
 | <code>debug</code> | <code>onEvent</code> 里的原始帧 | 只读订阅 WS 收发帧（调试用） |
+| <code>all</code> | 以上全部 | 一次拿到全部权限（内置调试终端用的就是它） |
 
 权限在 Rust 侧强制：没声明的 API 直接抛错，不是靠文档约束。启动页「插件」弹窗里
 每个插件都会列出它要的权限。
@@ -571,7 +601,14 @@ Coconut.setTimeout / Coconut.setInterval / Coconut.clearTimeout / Coconut.clearI
 
 右下角「插件」按钮打开，右上角 ✕ / `Esc` 关闭：
 
-- 标题栏：插件数 + 启用数（有报错转红），滚动时固定在顶部；右侧是打开目录 / 重新扫描；
+- 标题栏：插件数 + 启用数（有报错转红），滚动时固定在顶部；右侧是添加插件 / 打开目录 / 重新扫描；
+- **添加插件**：展开安装抽屉，三种安装方式：
+  - **本地文件**：弹出系统文件管理器选择 `.js`（可多选），选完立即安装并启用；
+  - **远程链接**：粘贴指向 `.js` 文件的直链（GitHub Raw / Release 均可），
+    启动器 reqwest 下载后写入插件目录；文件名取自链接末段或 `Content-Disposition`；
+  - **拖拽**：把 `.js` 文件直接拖进弹窗（WebView 拖放事件）；
+  - 安装 = 校验文件名白名单（`<名字>.js`）→ 写入插件目录 → 立即重载，
+    权限仍然由 Rust 侧按插件头部声明强制；
 - 工具条：按名称 / id / 描述 / 权限搜索，按「全部 / 已启用 / 已停用 / 异常」筛选（带数量），
   一键全部启用 / 停用；「清理死数据」会删除目录里已经不存在的插件留下的
   <code>state.json</code> 条目与 <code>storage/&lt;id&gt;.json</code>；
@@ -588,6 +625,7 @@ builtin/
   debug-terminal.js        可读写调试终端源码（启动时导出到 plugins/）
 ```
 
+- 权限是 `@permissions all`（全部权限：dom / toolbox / network / storage / ui / server / debug）。
 - 首次启动导出到 `plugins/debug-terminal.js`，之后以插件目录文件为准；用户可改 / 可删（删了下次启动会再导出）。
 - `Ctrl+T` / `Ctrl+\`` 开关，`Esc` 关闭。
 - 输入框支持插件层与 DOM 层 JS，`Tab` 切换层级；括号闭合回车运行，括号未闭合回车换行。
@@ -713,7 +751,7 @@ coconut-app/
     builtin/debug-terminal.js  内置调试终端源码（导出到插件目录）
     src/shell_inject.js     沉浸式外壳 + 插件浮层宿主
     build.rs                把 toolbox-static 打成内嵌压缩包
-    toolbox-static/         构建时打包的静态产物
+    toolbox-static/         构建时从 wuwa-afyg-tool 最新 Release 拉取（不入 Git）
     tauri.conf.json
     Cargo.toml
   examples/plugins/eye-care.js    插件示例（护眼滤镜）

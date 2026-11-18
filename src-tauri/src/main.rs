@@ -370,6 +370,132 @@ fn plugins_cleanup_dead(app: tauri::AppHandle) -> Result<serde_json::Value, Stri
     state.plugins.cleanup_dead()
 }
 
+/// 从系统文件管理器选好的本地路径安装插件（前端用 dialog 插件选文件）。
+#[tauri::command]
+async fn plugins_install_file(
+    app: tauri::AppHandle,
+    path: String,
+) -> Result<serde_json::Value, String> {
+    let state = server_state(&app).ok_or_else(|| "本地服务尚未启动".to_string())?;
+    let source = tokio::task::spawn_blocking(move || std::fs::read_to_string(&path))
+        .await
+        .map_err(|error| format!("读取插件文件失败：{error}"))?
+        .map_err(|error| format!("读取插件文件失败：{error}"))?;
+    let filename = Path::new(&path)
+        .file_name()
+        .map(|name| name.to_string_lossy().to_string())
+        .ok_or_else(|| "插件路径没有文件名".to_string())?;
+    let info = state.plugins.install_js(&filename, &source)?;
+    serde_json::to_value(info).map_err(|error| error.to_string())
+}
+
+/// 从远程链接下载并安装插件。链接要指向一个 .js 文件
+/// （GitHub Raw / Release 资产等都可以），文件名取自链接末段或 Content-Disposition。
+#[tauri::command]
+async fn plugins_install_url(
+    app: tauri::AppHandle,
+    url: String,
+) -> Result<serde_json::Value, String> {
+    let state = server_state(&app).ok_or_else(|| "本地服务尚未启动".to_string())?;
+    let parsed = url::Url::parse(&url.trim()).map_err(|error| format!("无效链接：{error}"))?;
+    if parsed.scheme() != "https" && parsed.scheme() != "http" {
+        return Err("只支持 http / https 链接".into());
+    }
+
+    let client = reqwest::Client::builder()
+        .connect_timeout(Duration::from_secs(15))
+        .timeout(Duration::from_secs(120))
+        .build()
+        .map_err(|error| format!("创建下载器失败：{error}"))?;
+    let response = client
+        .get(parsed.clone())
+        .send()
+        .await
+        .map_err(|error| format!("下载插件失败：{error}"))?;
+    if !response.status().is_success() {
+        return Err(format!("下载插件失败：HTTP {}", response.status()));
+    }
+
+    // 文件名优先级：Content-Disposition > URL 路径末段。必须能定位到一个 .js。
+    let mut filename = response
+        .headers()
+        .get(reqwest::header::CONTENT_DISPOSITION)
+        .and_then(|value| value.to_str().ok())
+        .and_then(disposition_filename);
+    if filename.is_none() {
+        filename = parsed
+            .path()
+            .rsplit('/')
+            .find(|segment| !segment.is_empty())
+            .map(|segment| percent_decode(segment));
+    }
+    let filename =
+        filename.ok_or_else(|| "无法从链接推断插件文件名（链接需指向 .js 文件）".to_string())?;
+
+    const MAX_PLUGIN_BYTES: usize = 8 * 1024 * 1024;
+    let bytes = response
+        .bytes()
+        .await
+        .map_err(|error| format!("下载插件失败：{error}"))?;
+    if bytes.len() > MAX_PLUGIN_BYTES {
+        return Err(format!(
+            "插件文件超过 {} MB 上限",
+            MAX_PLUGIN_BYTES / 1024 / 1024
+        ));
+    }
+    let source = String::from_utf8_lossy(&bytes);
+    let info = state.plugins.install_js(&filename, &source)?;
+    serde_json::to_value(info).map_err(|error| error.to_string())
+}
+
+/// 解析 `Content-Disposition` 里的 `filename="..."` / `filename*=UTF-8''...`。
+fn disposition_filename(value: &str) -> Option<String> {
+    for part in value.split(';') {
+        let part = part.trim();
+        if let Some(rest) = part
+            .strip_prefix("filename*")
+            .and_then(|rest| rest.trim_start().strip_prefix('='))
+        {
+            // RFC 5987：UTF-8''<percent-encoded>
+            let rest = rest.trim();
+            if let Some(encoded) = rest.split_once('\'').map(|(_, tail)| tail) {
+                let encoded = encoded.split_once('\'').map_or(encoded, |(value, _)| value);
+                return Some(percent_decode(encoded));
+            }
+        }
+        if let Some(rest) = part
+            .strip_prefix("filename")
+            .and_then(|rest| rest.trim_start().strip_prefix('='))
+        {
+            let name = rest.trim().trim_matches('"');
+            if !name.is_empty() {
+                return Some(name.to_string());
+            }
+        }
+    }
+    None
+}
+
+/// 极简 percent-decode：插件文件名场景足够用，不引入新依赖。
+fn percent_decode(value: &str) -> String {
+    let bytes = value.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut index = 0;
+    while index < bytes.len() {
+        if bytes[index] == b'%' && index + 2 < bytes.len() {
+            let hex = &value[index + 1..index + 3];
+            if let Ok(byte) = u8::from_str_radix(hex, 16) {
+                out.push(byte);
+                index += 3;
+                continue;
+            }
+        }
+        out.push(bytes[index]);
+        index += 1;
+    }
+    String::from_utf8_lossy(&out).to_string()
+}
+
 #[tauri::command]
 fn open_uninstaller_dir() -> Result<String, String> {
     let dir =
@@ -884,6 +1010,7 @@ fn install_panic_log() {
 fn main() {
     install_panic_log();
     let app = tauri::Builder::default()
+        .plugin(tauri_plugin_dialog::init())
         .manage(AppServer(Mutex::new(None)))
         .manage(Launched(AtomicBool::new(false)))
         .manage(LauncherUrl(Mutex::new(String::new())))
@@ -909,6 +1036,8 @@ fn main() {
             plugins_reload,
             plugins_open_dir,
             plugins_cleanup_dead,
+            plugins_install_file,
+            plugins_install_url,
             open_uninstaller_dir,
             switch_mirror,
             open_toolbox_window,

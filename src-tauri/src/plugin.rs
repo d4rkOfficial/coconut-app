@@ -26,6 +26,17 @@ pub enum Permission {
 }
 
 impl Permission {
+    /// 全部权限，按声明顺序。`@permissions all` 一次拿到（内置调试终端用）。
+    pub const ALL: &[Permission] = &[
+        Permission::Dom,
+        Permission::Toolbox,
+        Permission::Network,
+        Permission::Storage,
+        Permission::Ui,
+        Permission::Server,
+        Permission::Debug,
+    ];
+
     pub fn as_str(self) -> &'static str {
         match self {
             Permission::Dom => "dom",
@@ -132,7 +143,17 @@ pub fn parse_meta(source: &str, fallback_name: &str) -> PluginMeta {
             }
             "permissions" | "permission" => {
                 for item in value.split([',', ' ', '|']) {
-                    if item.trim().is_empty() {
+                    let item = item.trim();
+                    if item.is_empty() {
+                        continue;
+                    }
+                    // `all` 是特殊值：一次展开成全部权限（内置调试终端用）。
+                    if item.eq_ignore_ascii_case("all") {
+                        for permission in Permission::ALL {
+                            if !permissions.contains(permission) {
+                                permissions.push(*permission);
+                            }
+                        }
                         continue;
                     }
                     if let Some(permission) = Permission::parse(item) {
@@ -339,6 +360,15 @@ const x = 1
         assert_eq!(meta.permissions, vec![Permission::Dom]);
         assert_eq!(meta.mount, Mount::None);
         assert_eq!(meta.name, "p");
+    }
+
+    #[test]
+    fn all_expands_to_every_permission() {
+        let meta = parse_meta("// @permissions all\n", "p");
+        assert_eq!(meta.permissions, Permission::ALL.to_vec());
+        // 混写也应该去重并拿到全部
+        let mixed = parse_meta("// @permissions all, dom, network\n", "p");
+        assert_eq!(mixed.permissions, Permission::ALL.to_vec());
     }
 
     #[test]

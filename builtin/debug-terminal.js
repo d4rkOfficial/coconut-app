@@ -1,7 +1,7 @@
 // @name        调试终端
-// @version     2.1.0
+// @version     2.2.0
 // @description 可读写调试终端：插件层 / DOM 层 JS、console 输出、括号感知回车
-// @permissions dom, network
+// @permissions all
 // @mount       none
 //
 // 这是内置插件源码。启动器只在插件目录里没有 debug-terminal.js 时导出它；

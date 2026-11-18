@@ -277,6 +277,60 @@ impl Plugins {
         &self.dir
     }
 
+    /// 校验并把一份插件源码安装进插件目录（本地选择 / 远程下载共用）。
+    ///
+    /// - `filename`：目标文件名，必须是安全的 `<名字>.js`（禁止路径分隔符等）；
+    /// - 同名文件会被覆盖（相当于重装）；
+    /// - 安装成功后立刻重载：启用状态下直接跑起来。
+    pub fn install_js(&self, filename: &str, source: &str) -> Result<PluginInfo, String> {
+        // 文件名白名单：ASCII 字母 / 数字 / 点 / 下划线 / 连字符，必须以 .js 结尾。
+        // 插件 id 同时是 state.json 与 storage/<id>.json 的 key，放宽字符没好处。
+        let name = filename.trim();
+        let stem = name.strip_suffix(".js").unwrap_or("");
+        let plausible = !stem.is_empty()
+            && stem.len() <= 64
+            && stem
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-'))
+            && !stem.starts_with('_');
+        if !plausible {
+            return Err(format!(
+                "插件文件名不合法：{name}（应为字母 / 数字 / 连字符组成的 .js 文件）"
+            ));
+        }
+        let source = source.trim_start_matches('\u{feff}');
+        if source.trim().is_empty() {
+            return Err("插件文件是空的".into());
+        }
+
+        let path = self.dir.join(name);
+        std::fs::create_dir_all(&self.dir).map_err(|error| format!("创建插件目录失败：{error}"))?;
+        std::fs::write(&path, source).map_err(|error| format!("写入插件文件失败：{error}"))?;
+        self.log_line(format!(
+            "[plugin] 安装插件：{name}（{} 字节）",
+            source.len()
+        ));
+
+        self.refresh_catalog();
+        self.reload(stem);
+
+        let states = self
+            .states
+            .lock()
+            .map(|states| states.clone())
+            .unwrap_or_default();
+        let catalog = self
+            .catalog
+            .lock()
+            .map(|items| items.clone())
+            .unwrap_or_default();
+        catalog
+            .iter()
+            .find(|plugin| plugin.id == stem)
+            .map(|plugin| PluginInfo::from_plugin(plugin, &states.state(&plugin.id)))
+            .ok_or_else(|| "安装后找不到插件（元数据可能损坏）".to_string())
+    }
+
     fn log_line(&self, line: String) {
         self.log.line(&line);
     }

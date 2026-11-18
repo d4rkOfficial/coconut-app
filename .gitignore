@@ -11,6 +11,9 @@ dist/
 tmp/
 builtin/out/
 
+# 工具箱静态产物不入库：由 GitHub Actions 构建前从 wuwa-afyg-tool 最新 Release 拉取
+src-tauri/toolbox-static/
+
 # translation plugin (work in progress, kept in tmp)
 builtin/translate/
 builtin/translate.*/

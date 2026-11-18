@@ -542,6 +542,119 @@ async function openPlugins() {
   }
 }
 
+// ── 安装插件（本地文件 / 远程链接 / 拖拽）──
+let installing = false;
+
+function toggleInstallDrawer(force) {
+  const drawer = $('plugins-install');
+  const next = typeof force === 'boolean' ? force : drawer.hidden;
+  drawer.hidden = !next;
+  if (next) {
+    $('plugins-url').focus();
+  }
+}
+
+async function installPaths(paths) {
+  if (installing || !paths.length) return;
+  installing = true;
+  let installed = 0;
+  try {
+    for (const path of paths) {
+      const info = await invoke('plugins_install_file', { path });
+      installed += 1;
+      setStatus(
+        t('plugins.installOk', { name: info.name || info.id, version: info.version || '0.0.0' }),
+        'ready',
+        true,
+      );
+    }
+    if (installed > 0) await loadPlugins();
+  } catch (error) {
+    setStatus(t('plugins.installFailed', { detail: error?.message || error }), 'error', true);
+    await loadPlugins();
+  } finally {
+    installing = false;
+  }
+}
+
+async function pickAndInstallFile() {
+  try {
+    const selected = await invoke('plugin:dialog|open', {
+      options: {
+        multiple: true,
+        title: t('plugins.installFile'),
+        filters: [{ name: 'JavaScript', extensions: ['js'] }],
+      },
+    });
+    if (!selected) return;
+    const paths = Array.isArray(selected) ? selected : [selected];
+    await installPaths(paths.filter((path) => /\.js$/i.test(String(path || ''))));
+  } catch (error) {
+    setStatus(t('plugins.installFailed', { detail: error?.message || error }), 'error', true);
+  }
+}
+
+async function installFromUrl() {
+  if (installing) return;
+  const input = $('plugins-url');
+  const url = String(input?.value || '').trim();
+  if (!url) {
+    input?.focus();
+    return;
+  }
+  installing = true;
+  const button = $('plugins-url-go');
+  const original = button.textContent;
+  button.disabled = true;
+  input.disabled = true;
+  button.textContent = t('plugins.installBusy');
+  try {
+    const info = await invoke('plugins_install_url', { url });
+    setStatus(
+      t('plugins.installOk', { name: info.name || info.id, version: info.version || '0.0.0' }),
+      'ready',
+      true,
+    );
+    input.value = '';
+    await loadPlugins();
+  } catch (error) {
+    setStatus(t('plugins.installFailed', { detail: error?.message || error }), 'error', true);
+  } finally {
+    installing = false;
+    button.disabled = false;
+    input.disabled = false;
+    button.textContent = original;
+    input.focus();
+  }
+}
+
+/** WebView 拖拽 .js 文件进弹窗直接安装（工具箱页面打开时没有启动器弹窗，自动忽略）。 */
+function initPluginDrop() {
+  try {
+    const webview = window.__TAURI__?.webview?.getCurrentWebview?.();
+    if (!webview || typeof webview.onDragDropEvent !== 'function') return;
+    webview.onDragDropEvent((event) => {
+      const dialog = $('plugins-dialog');
+      if (dialog.hidden) return;
+      const payload = event.payload || {};
+      if (payload.type === 'enter' || payload.type === 'over') {
+        dialog.dataset.drag = 'true';
+        return;
+      }
+      dialog.dataset.drag = 'false';
+      if (payload.type !== 'drop') return;
+      const paths = (payload.paths || []).filter((path) => /\.js$/i.test(String(path || '')));
+      if (!paths.length) {
+        setStatus(t('plugins.installInvalid'), 'error', true);
+        return;
+      }
+      installPaths(paths);
+    });
+  } catch (error) {
+    // 老运行时没有 drag-drop API：拖拽不可用，文件 / 链接安装不受影响。
+  }
+}
+
 function initPlugins() {
   $('plugins').addEventListener('click', openPlugins);
   $('plugins-close').addEventListener('click', closePlugins);
@@ -559,6 +672,12 @@ function initPlugins() {
     } catch (error) {
       setStatus(t('plugins.openFailed', { detail: error?.message || error }), 'error', true);
     }
+  });
+  $('plugins-add').addEventListener('click', () => toggleInstallDrawer());
+  $('plugins-install-file').addEventListener('click', pickAndInstallFile);
+  $('plugins-url-go').addEventListener('click', installFromUrl);
+  $('plugins-url').addEventListener('keydown', (event) => {
+    if (event.key === 'Enter') installFromUrl();
   });
   $('plugins-rescan').addEventListener('click', loadPlugins);
   $('plugins-cleanup').addEventListener('click', cleanupDeadPlugins);
@@ -578,6 +697,7 @@ function initPlugins() {
 
   $('plugins-enable-all').addEventListener('click', () => bulkPluginAction(true));
   $('plugins-disable-all').addEventListener('click', () => bulkPluginAction(false));
+  initPluginDrop();
 }
 
 function applyState(next) {

@@ -1,0 +1,191 @@
+# 椰果工具箱启动器 · 三平台发布构建
+#
+# 触发方式：
+#   1. push 形如 v0.3.1 的 tag        → 构建并创建 GitHub Release
+#   2. Actions 页面手动 workflow_dispatch → 只构建并上传 artifact（不发版）
+#
+# 平台矩阵：
+#   windows-latest  → MSI 安装包 + 单文件便携 exe（WebView2 由系统提供）
+#   macos-latest    → Apple Silicon（aarch64）.app / .dmg（未签名）
+#   macos-13        → Intel（x86_64）.app / .dmg（未签名）
+#   ubuntu-22.04    → x86_64 .deb + .AppImage
+#
+# 产物列表见每个 matrix 项的 artifacts 字段，release job 统一收集上传。
+
+name: Release Launcher
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+env:
+  APP_NAME: coconut-app
+
+jobs:
+  build:
+    name: ${{ matrix.label }}
+    runs-on: ${{ matrix.os }}
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - label: Windows x64
+            os: windows-latest
+            target: x86_64-pc-windows-msvc
+            bundles: msi
+            # 每行 "glob => 发布用文件名"：发布资产用固定 ASCII 名，方便 share 站写死直链
+            artifacts: |
+              src-tauri/target/release/bundle/msi/*.msi => coconut-app-windows-x64.msi
+              src-tauri/target/release/coconut-app.exe => coconut-app-windows-x64.exe
+          - label: macOS Apple Silicon
+            os: macos-latest
+            target: aarch64-apple-darwin
+            bundles: app,dmg
+            artifacts: |
+              src-tauri/target/aarch64-apple-darwin/release/bundle/dmg/*.dmg => coconut-app-macos-aarch64.dmg
+          - label: macOS Intel
+            os: macos-13
+            target: x86_64-apple-darwin
+            bundles: app,dmg
+            artifacts: |
+              src-tauri/target/x86_64-apple-darwin/release/bundle/dmg/*.dmg => coconut-app-macos-x64.dmg
+          - label: Linux x64
+            os: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+            bundles: deb,appimage
+            artifacts: |
+              src-tauri/target/x86_64-unknown-linux-gnu/release/bundle/deb/*.deb => coconut-app-linux-x64.deb
+              src-tauri/target/x86_64-unknown-linux-gnu/release/bundle/appimage/*.AppImage => coconut-app-linux-x64.AppImage
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Pack builtin plugins
+        run: npm run builtin
+
+      # 静态产物不入库：每次构建都拉 wuwa-afyg-tool 最新 Release 的 toolbox.tar.gz。
+      # 下载失败就中止构建，避免把「空静态包」的启动器发出去。
+      - name: Fetch latest toolbox static bundle
+        shell: bash
+        run: |
+          set -euo pipefail
+          BASE="https://github.com/d4rkOfficial/wuwa-afyg-tool/releases/latest/download"
+          curl -fsSL --retry 3 --connect-timeout 20 -o toolbox.tar.gz "$BASE/toolbox.tar.gz"
+          curl -fsSL --retry 3 --connect-timeout 20 -o toolbox-manifest.json "$BASE/manifest.json"
+          mkdir -p src-tauri/toolbox-static
+          tar -xzf toolbox.tar.gz -C src-tauri/toolbox-static
+          cp toolbox-manifest.json src-tauri/toolbox-static/manifest.json
+          test -f src-tauri/toolbox-static/index.html || {
+            echo "::error::下载的工具箱静态包缺少 index.html"
+            exit 1
+          }
+          echo "内置工具箱版本：$(cat toolbox-manifest.json)"
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Rust build cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+          key: ${{ matrix.target }}
+
+      # Linux 需要 webkit2gtk / appindicator 等系统依赖；libfuse2 供 AppImage 打包使用
+      - name: Install Linux system dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            build-essential \
+            curl wget file \
+            libxdo-dev \
+            libssl-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            patchelf \
+            libfuse2
+
+      - name: Build (${{ matrix.bundles }})
+        working-directory: src-tauri
+        shell: bash
+        run: |
+          node ../node_modules/@tauri-apps/cli/tauri.js build \
+            --target ${{ matrix.target }} \
+            --bundles ${{ matrix.bundles }}
+
+      - name: Collect artifacts
+        shell: bash
+        run: |
+          mkdir -p publish
+          found=0
+          # matrix.artifacts 每行 "glob => 发布文件名"，统一复制成固定 ASCII 名
+          while IFS= read -r line; do
+            [ -z "$line" ] && continue
+            pattern="${line%%=>*}"
+            dest="${line##*=>}"
+            pattern="$(echo "$pattern" | xargs)"
+            dest="$(echo "$dest" | xargs)"
+            if [ -z "$dest" ]; then
+              echo "::error::产物行缺少目标文件名：$line"
+              exit 1
+            fi
+            for file in $pattern; do
+              [ -e "$file" ] || continue
+              cp "$file" "publish/$dest"
+              found=1
+            done
+          done <<< '${{ matrix.artifacts }}'
+          if [ "$found" -eq 0 ]; then
+            echo "::error::没有找到任何构建产物"
+            exit 1
+          fi
+          ls -la publish/
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: coconut-app-${{ matrix.target }}
+          path: publish/*
+          if-no-files-found: error
+          retention-days: 14
+
+  release:
+    name: Publish release
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: List files
+        run: ls -la dist/
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*
+          generate_release_notes: true
+          fail_on_unmatched_files: true

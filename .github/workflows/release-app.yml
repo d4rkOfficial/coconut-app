@@ -137,7 +137,8 @@ jobs:
         working-directory: src-tauri
         shell: bash
         run: |
-          node ../node_modules/@tauri-apps/cli/tauri.js build \
+          # 用 .bin 里的 tauri 入口，不依赖 @tauri-apps/cli 包内文件路径
+          npx --no-install tauri build \
             --target ${{ matrix.target }} \
             --bundles ${{ matrix.bundles }}
 

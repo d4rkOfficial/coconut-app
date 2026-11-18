@@ -377,14 +377,14 @@ async fn plugins_install_file(
     path: String,
 ) -> Result<serde_json::Value, String> {
     let state = server_state(&app).ok_or_else(|| "本地服务尚未启动".to_string())?;
-    let source = tokio::task::spawn_blocking(move || std::fs::read_to_string(&path))
-        .await
-        .map_err(|error| format!("读取插件文件失败：{error}"))?
-        .map_err(|error| format!("读取插件文件失败：{error}"))?;
     let filename = Path::new(&path)
         .file_name()
         .map(|name| name.to_string_lossy().to_string())
         .ok_or_else(|| "插件路径没有文件名".to_string())?;
+    let source = tokio::task::spawn_blocking(move || std::fs::read_to_string(&path))
+        .await
+        .map_err(|error| format!("读取插件文件失败：{error}"))?
+        .map_err(|error| format!("读取插件文件失败：{error}"))?;
     let info = state.plugins.install_js(&filename, &source)?;
     serde_json::to_value(info).map_err(|error| error.to_string())
 }
@@ -477,15 +477,17 @@ fn disposition_filename(value: &str) -> Option<String> {
 }
 
 /// 极简 percent-decode：插件文件名场景足够用，不引入新依赖。
+/// 全程按字节处理，避免在非 UTF-8 字符边界上切片导致 panic。
 fn percent_decode(value: &str) -> String {
     let bytes = value.as_bytes();
     let mut out = Vec::with_capacity(bytes.len());
     let mut index = 0;
     while index < bytes.len() {
         if bytes[index] == b'%' && index + 2 < bytes.len() {
-            let hex = &value[index + 1..index + 3];
-            if let Ok(byte) = u8::from_str_radix(hex, 16) {
-                out.push(byte);
+            let high = (bytes[index + 1] as char).to_digit(16);
+            let low = (bytes[index + 2] as char).to_digit(16);
+            if let (Some(high), Some(low)) = (high, low) {
+                out.push((high * 16 + low) as u8);
                 index += 3;
                 continue;
             }

@@ -312,7 +312,8 @@ impl Plugins {
         ));
 
         self.refresh_catalog();
-        self.reload(stem);
+        // 安装成功即算完成：插件自身语法错误由 reload 记录到状态里，界面显示为「异常」
+        let _ = self.reload(stem);
 
         let states = self
             .states

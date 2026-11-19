@@ -313,6 +313,23 @@ node node_modules/@tauri-apps/cli/tauri.js build
 
 如果使用 <code>pnpm dev</code> 遇到 Tauri CLI 参数错误，直接使用上面的 <code>node ... tauri.js</code>。
 
+### 启动页截图 / 立绘处理
+
+两个 npm task（都要先 <code>npm i --no-save sharp</code>，sharp 不进 devDependencies，免得拖慢 CI）：
+
+~~~bash
+npm run shot     # 跑启动器首页截图：亮色 / 暗色各一张 -> dist/preview-light.png / preview-dark.png
+npm run frames   # assets/coconut/{open,blink}.png 对齐裁切 -> ui/coconut-{open,blink}.webp
+~~~
+
+- <code>npm run shot</code> 会临时改写 <code>settings.json</code> 的 <code>theme</code>（跑完还原），
+  启动 <code>dist/coconut-app.exe</code>，等「启动时检查工具箱版本」写进 <code>service.log</code>
+  且左下角状态区连续两帧不变才截图，所以不会截到「检查中 / 更新中」；
+  连拍三帧挑最稳的一帧，避开偶发的闭眼帧；
+- 产物是窗口本身：圆角、背景全透明、四周不加留白，直接贴落地页就能用；
+- <code>npm run frames</code> 按 alpha 包围盒把睁眼 / 闭眼两帧等比缩放到同一画布，
+  头顶对齐、水平居中——两帧必须像素同框，否则眨眼会「跳位 + 重影」。
+
 ### 三平台自动构建（GitHub Actions）
 
 <code>.github/workflows/release-app.yml</code>：push 到 <code>main</code>、push <code>v*</code> tag

@@ -11,7 +11,9 @@
     "prebuild": "npm run builtin",
     "tauri:build": "npm run builtin && node node_modules/@tauri-apps/cli/tauri.js build --bundles msi",
     "icon": "node node_modules/@tauri-apps/cli/tauri.js icon assets/icon.svg",
-    "builtin": "node builtin/build.mjs"
+    "builtin": "node builtin/build.mjs",
+    "shot": "node scripts/shot-home.mjs",
+    "frames": "node scripts/make-coconut-frames.mjs"
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2.9.0",

@@ -2261,6 +2261,8 @@ button.key-button:hover {
 }
 .coconut-blink {
   opacity: 0;
+  /* 阴影只由底图（睁眼）画一次；闭眼那层再画一遍会叠出双重阴影 */
+  filter: none;
   transition: opacity 0.08s;
   pointer-events: none;
 }

@@ -336,7 +336,7 @@ node node_modules/@tauri-apps/cli/tauri.js build
 - tag 构建会自动创建 GitHub Release 并附上全部产物；手动触发只上传 workflow artifact；
 - 构建前会先跑 <code>npm run builtin</code> 打包内置插件（现在 builtin/ 下没有子目录时自动跳过）；
 - 发版流程：改 <code>package.json</code> / <code>src-tauri/tauri.conf.json</code> /
-  <code>src-tauri/Cargo.toml</code> 三处版本号 → <code>git tag v0.3.1 && git push --tags</code>；
+  <code>src-tauri/Cargo.toml</code> 三处版本号 → <code>git tag v0.3.2 && git push --tags</code>；
 - 仓库 <code>Settings → Actions → General → Workflow permissions</code> 需要选
   <code>Read and write permissions</code>，否则创建 Release 会 403。
 

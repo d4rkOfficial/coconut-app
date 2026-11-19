@@ -10,6 +10,7 @@
 </head>
 <body>
   <div class="app">
+    <svg class="blueprint" id="blueprint" viewBox="0 0 1180 720" preserveAspectRatio="xMidYMid slice" aria-hidden="true"></svg>
     <div class="titlebar" data-tauri-drag-region>
       <span class="titlebar-grip" data-tauri-drag-region></span>
       <div class="traffic">
@@ -130,6 +131,13 @@
               <path d="M4 10h11M11 5l5 5-5 5" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" />
             </svg>
           </button>
+          <button class="plugins-cta" id="plugins" type="button" data-i18n-title="plugins.tip" title="插件">
+            <span id="plugins-label" data-i18n="plugins.button">插件</span>
+            <span class="plugins-dot" id="plugins-dot" aria-hidden="true"></span>
+            <svg class="plugins-cta-icon" viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M10 4.5a2 2 0 0 1 4 0V6h2.5A1.5 1.5 0 0 1 18 7.5V10h1.5a2 2 0 0 1 0 4H18v2.5a1.5 1.5 0 0 1-1.5 1.5H14V18a2 2 0 0 1-4 0v-1.5H7.5A1.5 1.5 0 0 1 6 15V14H4.5a2 2 0 0 1 0-4H6V7.5A1.5 1.5 0 0 1 7.5 6H10V4.5Z" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" />
+            </svg>
+          </button>
         </div>
         <div class="checks">
           <button class="secondary check-chip" id="check-toolbox">
@@ -169,16 +177,16 @@
       </section>
 
       <aside class="hero-visual">
-        <div class="coconut-stage">
+        <div class="coconut-stage" id="coconut-stage" title="点击切换语言">
           <img
             class="coconut-icon"
             id="coconut"
-            src="./coconut.svg"
+            src="./coconut-open.webp"
             data-i18n-title="coconut.tip"
-            alt="椰果"
-            title="点击切换语言"
+            alt="椰果娘"
             draggable="false"
           />
+          <img class="coconut-icon coconut-blink" id="coconut-blink" src="./coconut-blink.webp" alt="" draggable="false" aria-hidden="true" />
         </div>
       </aside>
     </main>
@@ -197,10 +205,6 @@
         <strong id="phase">OFFLINE</strong>
       </div>
       <div class="footer-actions">
-        <button class="plugins-link" id="plugins" type="button" data-i18n-title="plugins.tip" title="插件">
-          <span class="plugins-dot" id="plugins-dot" aria-hidden="true"></span>
-          <span id="plugins-label" data-i18n="plugins.button">插件</span>
-        </button>
         <button
           class="uninstall-link"
           id="uninstall"
@@ -218,11 +222,6 @@
       <div class="plugins-panel" role="dialog" aria-modal="true" aria-labelledby="plugins-title">
         <header class="plugins-head">
           <div class="plugins-ident">
-            <span class="plugins-glyph" aria-hidden="true">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
-                <path d="M10 4.5a2 2 0 0 1 4 0V6h2.5A1.5 1.5 0 0 1 18 7.5V10h1.5a2 2 0 0 1 0 4H18v2.5a1.5 1.5 0 0 1-1.5 1.5H14v-1.5a2 2 0 0 0-4 0V18H7.5A1.5 1.5 0 0 1 6 16.5V14H4.5a2 2 0 0 1 0-4H6V7.5A1.5 1.5 0 0 1 7.5 6H10V4.5Z" />
-              </svg>
-            </span>
             <div class="plugins-ident-text">
               <div class="plugins-titleline">
                 <h2 id="plugins-title" data-i18n="plugins.title">插件</h2>
@@ -238,9 +237,6 @@
             <button class="plugins-ghost" id="plugins-open" type="button" data-i18n="plugins.open">
               打开插件目录
             </button>
-            <button class="plugins-ghost" id="plugins-rescan" type="button" data-i18n="plugins.rescan">
-              重新扫描
-            </button>
             <button
               class="plugins-close"
               id="plugins-close"
@@ -255,53 +251,6 @@
             </button>
           </div>
         </header>
-
-        <div class="plugins-install" id="plugins-install" hidden>
-          <div class="install-card">
-            <span class="install-card-icon" aria-hidden="true">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
-                <path d="M14 3.5H7.5A1.5 1.5 0 0 0 6 5v14a1.5 1.5 0 0 0 1.5 1.5h9A1.5 1.5 0 0 0 18 19V7.5L14 3.5Z" />
-                <path d="M14 3.5V7.5H18" />
-                <path d="M12 10.5v6M9.5 14h5" />
-              </svg>
-            </span>
-            <div class="install-card-text">
-              <strong data-i18n="plugins.installFile">从本地文件安装</strong>
-              <span data-i18n="plugins.installFileDesc">从系统文件管理器选择一个 .js 插件文件</span>
-            </div>
-            <button class="install-btn" id="plugins-install-file" type="button" data-i18n="plugins.installFileBtn">
-              选择文件
-            </button>
-          </div>
-          <div class="install-card">
-            <span class="install-card-icon" aria-hidden="true">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
-                <path d="M10.5 13.5a4 4 0 0 0 5.66 0l3-3a4 4 0 1 0-5.66-5.66l-1.3 1.3" />
-                <path d="M13.5 10.5a4 4 0 0 0-5.66 0l-3 3a4 4 0 1 0 5.66 5.66l1.3-1.3" />
-              </svg>
-            </span>
-            <div class="install-card-text">
-              <strong data-i18n="plugins.installUrl">从远程链接安装</strong>
-              <span data-i18n="plugins.installUrlDesc">粘贴指向 .js 文件的直链（GitHub Raw / Release 均可）</span>
-              <div class="install-url-row">
-                <input
-                  id="plugins-url"
-                  type="url"
-                  autocomplete="off"
-                  spellcheck="false"
-                  data-i18n-placeholder="plugins.installUrlPlaceholder"
-                  placeholder="https://example.com/my-plugin.js"
-                />
-                <button class="install-btn go" id="plugins-url-go" type="button" data-i18n="plugins.installBtn">
-                  安装
-                </button>
-              </div>
-            </div>
-          </div>
-          <p class="install-hint" data-i18n="plugins.installHint">
-            也可以直接把 .js 文件拖进这个弹窗完成安装
-          </p>
-        </div>
 
         <div class="plugins-toolbar">
           <label class="plugins-search">
@@ -325,9 +274,7 @@
             <button type="button" data-filter="error">异常</button>
           </div>
           <div class="plugins-bulk">
-            <button type="button" id="plugins-cleanup" data-i18n="plugins.cleanupDead">清理死数据</button>
-            <button type="button" id="plugins-enable-all" data-i18n="plugins.enableAll">全部启用</button>
-            <button type="button" id="plugins-disable-all" data-i18n="plugins.disableAll">全部停用</button>
+            <button type="button" id="plugins-toggle-all" data-i18n="plugins.disableAll">全部停用</button>
           </div>
         </div>
 
@@ -338,6 +285,51 @@
           <span class="plugins-foot-note" data-i18n="plugins.footNote">
             改动最多 3 秒自动生效 · 停用不会删除文件
           </span>
+          <span class="plugins-kbd">Esc</span>
+        </footer>
+      </div>
+    </div>
+
+    <!-- 添加插件：独立弹窗 -->
+    <div class="install-dialog" id="install-dialog" hidden>
+      <div class="install-panel" role="dialog" aria-modal="true" aria-labelledby="install-title">
+        <header class="install-head">
+          <div class="install-ident">
+            <span class="install-glyph" aria-hidden="true">＋</span>
+            <div>
+              <h2 id="install-title" data-i18n="plugins.add">添加插件</h2>
+              <p data-i18n="plugins.installSubtitle">从本地文件或远程链接安装 .js 插件</p>
+            </div>
+          </div>
+          <button class="plugins-close" id="install-close" type="button" aria-label="关闭" data-i18n-title="plugins.closeTitle">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true">
+              <path d="M7 7l10 10M17 7L7 17" />
+            </svg>
+          </button>
+        </header>
+        <div class="install-body">
+          <div class="addtabs" id="addtabs" role="tablist">
+            <button class="on" type="button" data-tab="file" data-i18n="plugins.installFile">📁 从本地文件</button>
+            <button type="button" data-tab="url" data-i18n="plugins.installUrl">🔗 从远程链接</button>
+          </div>
+          <div class="addview" id="addview-file">
+            <label class="dropzone" id="install-dropzone">
+              <input type="file" id="install-file-input" accept=".js" multiple hidden />
+              <span class="dropzone-ico" aria-hidden="true">⬆</span>
+              <strong data-i18n="plugins.installFileBtn">点击选择 .js 文件</strong>
+              <span class="dropzone-sub" data-i18n="plugins.installFileDesc">从系统文件管理器选择，或把文件拖到这里</span>
+            </label>
+          </div>
+          <div class="addview" id="addview-url" hidden>
+            <div class="install-url-row">
+              <input id="plugins-url" type="url" autocomplete="off" spellcheck="false" data-i18n-placeholder="plugins.installUrlPlaceholder" placeholder="https://example.com/my-plugin.js" />
+              <button class="install-btn go" id="plugins-url-go" type="button" data-i18n="plugins.installBtn">安装</button>
+            </div>
+            <p class="install-hint" data-i18n="plugins.installUrlDesc">粘贴指向 .js 文件的直链（GitHub Raw / Release 均可）</p>
+          </div>
+        </div>
+        <footer class="install-foot">
+          <span data-i18n="plugins.installHint">也可以直接把 .js 文件拖进这个弹窗完成安装</span>
           <span class="plugins-kbd">Esc</span>
         </footer>
       </div>

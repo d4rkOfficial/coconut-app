@@ -303,12 +303,14 @@ function updatePluginChrome(list) {
     }
   }
 
-  const enableAll = $('plugins-enable-all');
-  const disableAll = $('plugins-disable-all');
-  if (enableAll) enableAll.disabled = pluginBusy || total === 0 || enabled === total;
-  if (disableAll) disableAll.disabled = pluginBusy || enabled === 0;
-  const cleanup = $('plugins-cleanup');
-  if (cleanup) cleanup.disabled = pluginBusy;
+  // 全部启用 / 停用合并为一个按钮：按当前状态显示相反动作
+  const toggleAll = $('plugins-toggle-all');
+  if (toggleAll) {
+    toggleAll.disabled = pluginBusy || total === 0;
+    const anyOn = enabled > 0;
+    toggleAll.textContent = t(anyOn ? 'plugins.disableAll' : 'plugins.enableAll');
+    toggleAll.dataset.action = anyOn ? 'off' : 'on';
+  }
 }
 
 function pluginPermChips(permissions) {
@@ -507,51 +509,86 @@ async function bulkPluginAction(enabled) {
 }
 
 /** 清理已从目录删除的插件留下的 state / storage 残留。 */
-async function cleanupDeadPlugins() {
+async function cleanupDeadPlugins(options) {
   if (pluginBusy) return;
+  const silent = Boolean(options && options.silent);
   pluginBusy = true;
   updatePluginChrome(pluginEntries);
   try {
     const result = await invoke('plugins_cleanup_dead');
     const states = Number(result?.states || 0);
     const storage = Number(result?.storage || 0);
-    if (!states && !storage) {
-      setStatus(t('plugins.cleanupEmpty'), 'ready', true);
-    } else {
-      setStatus(t('plugins.cleanupToast', { states, storage }), 'ready', true);
+    if (!silent) {
+      if (!states && !storage) {
+        setStatus(t('plugins.cleanupEmpty'), 'ready', true);
+      } else {
+        setStatus(t('plugins.cleanupToast', { states, storage }), 'ready', true);
+      }
     }
   } catch (error) {
-    setStatus(t('plugins.cleanupFailed', { detail: error?.message || error }), 'error', true);
+    if (!silent) setStatus(t('plugins.cleanupFailed', { detail: error?.message || error }), 'error', true);
   }
   pluginBusy = false;
   await loadPlugins();
 }
 
+let pluginScanTimer = 0;
+
 function closePlugins() {
   $('plugins-dialog').hidden = true;
+  if (pluginScanTimer) {
+    clearInterval(pluginScanTimer);
+    pluginScanTimer = 0;
+  }
 }
 
 async function openPlugins() {
   if (!connected) return;
   $('plugins-dialog').hidden = false;
+  // 打开时自动清理死数据（后台静默，不打断操作）
+  cleanupDeadPlugins({ silent: true });
   await loadPlugins();
   const search = $('plugins-search');
   if (search) {
     search.value = pluginQuery;
     search.focus();
   }
+  // 弹窗打开期间每 10 秒自动扫描并重载一次
+  if (pluginScanTimer) clearInterval(pluginScanTimer);
+  pluginScanTimer = setInterval(() => {
+    if ($('plugins-dialog').hidden) {
+      clearInterval(pluginScanTimer);
+      pluginScanTimer = 0;
+      return;
+    }
+    loadPlugins();
+  }, 10000);
 }
 
 // ── 安装插件（本地文件 / 远程链接 / 拖拽）──
 let installing = false;
 
 function toggleInstallDrawer(force) {
-  const drawer = $('plugins-install');
-  const next = typeof force === 'boolean' ? force : drawer.hidden;
-  drawer.hidden = !next;
+  const dialog = $('install-dialog');
+  const next = typeof force === 'boolean' ? force : dialog.hidden;
+  dialog.hidden = !next;
   if (next) {
-    $('plugins-url').focus();
+    // 默认回到"本地文件"tab
+    switchInstallTab('file');
   }
+}
+
+function switchInstallTab(which) {
+  for (const btn of document.querySelectorAll('#addtabs button')) {
+    btn.classList.toggle('on', btn.dataset.tab === which);
+  }
+  $('addview-file').hidden = which !== 'file';
+  $('addview-url').hidden = which !== 'url';
+}
+
+function closeInstall() {
+  $('install-dialog').hidden = true;
+  $('install-dialog').dataset.drag = 'false';
 }
 
 async function installPaths(paths) {
@@ -634,21 +671,24 @@ function initPluginDrop() {
     const webview = window.__TAURI__?.webview?.getCurrentWebview?.();
     if (!webview || typeof webview.onDragDropEvent !== 'function') return;
     webview.onDragDropEvent((event) => {
-      const dialog = $('plugins-dialog');
-      if (dialog.hidden) return;
+      const installDialog = $('install-dialog');
+      const pluginsDialog = $('plugins-dialog');
+      const active = !installDialog.hidden ? installDialog : !pluginsDialog.hidden ? pluginsDialog : null;
+      if (!active) return;
       const payload = event.payload || {};
       if (payload.type === 'enter' || payload.type === 'over') {
-        dialog.dataset.drag = 'true';
+        active.dataset.drag = 'true';
         return;
       }
-      dialog.dataset.drag = 'false';
+      if (active === installDialog) installDialog.dataset.drag = 'false';
+      else pluginsDialog.dataset.drag = 'false';
       if (payload.type !== 'drop') return;
       const paths = (payload.paths || []).filter((path) => /\.js$/i.test(String(path || '')));
       if (!paths.length) {
         setStatus(t('plugins.installInvalid'), 'error', true);
         return;
       }
-      installPaths(paths);
+      installPaths(paths).then(() => closeInstall());
     });
   } catch (error) {
     // 老运行时没有 drag-drop API：拖拽不可用，文件 / 链接安装不受影响。
@@ -661,9 +701,6 @@ function initPlugins() {
   $('plugins-dialog').addEventListener('click', (event) => {
     if (event.target === $('plugins-dialog')) closePlugins();
   });
-  document.addEventListener('keydown', (event) => {
-    if (event.key === 'Escape' && !$('plugins-dialog').hidden) closePlugins();
-  });
 
   $('plugins-open').addEventListener('click', async () => {
     try {
@@ -673,14 +710,49 @@ function initPlugins() {
       setStatus(t('plugins.openFailed', { detail: error?.message || error }), 'error', true);
     }
   });
-  $('plugins-add').addEventListener('click', () => toggleInstallDrawer());
-  $('plugins-install-file').addEventListener('click', pickAndInstallFile);
+
+  // 合并的「全部启用 / 停用」按钮：按当前状态决定动作
+  $('plugins-toggle-all').addEventListener('click', (event) => {
+    const btn = event.currentTarget;
+    bulkPluginAction(btn.dataset.action !== 'off');
+  });
+
+  // 添加插件：独立弹窗
+  $('plugins-add').addEventListener('click', () => toggleInstallDrawer(true));
+  $('install-close').addEventListener('click', closeInstall);
+  $('install-dialog').addEventListener('click', (event) => {
+    if (event.target === $('install-dialog')) closeInstall();
+  });
+  for (const tab of document.querySelectorAll('#addtabs button')) {
+    tab.addEventListener('click', () => switchInstallTab(tab.dataset.tab));
+  }
+  // 本地文件选择：走 Tauri 系统对话框（与拖拽一致，兼容性最好）
+  const fileInput = $('install-file-input');
+  const dropzone = $('install-dropzone');
+  dropzone.addEventListener('click', () => {
+    pickAndInstallFile().then(() => closeInstall());
+  });
+  // <input> 仅作为无 Tauri 环境（预览）时的兜底
+  fileInput.addEventListener('change', () => {
+    const names = Array.from(fileInput.files || []).map((f) => f.name).filter((n) => /\.js$/i.test(n));
+    if (names.length) {
+      setStatus(t('plugins.installOk', { name: names.join(', '), version: '—' }), 'ready', true);
+      closeInstall();
+    }
+    fileInput.value = '';
+  });
+  // 远程链接安装
   $('plugins-url-go').addEventListener('click', installFromUrl);
   $('plugins-url').addEventListener('keydown', (event) => {
     if (event.key === 'Enter') installFromUrl();
   });
-  $('plugins-rescan').addEventListener('click', loadPlugins);
-  $('plugins-cleanup').addEventListener('click', cleanupDeadPlugins);
+
+  // ESC：优先关添加插件弹窗，其次关插件弹窗
+  document.addEventListener('keydown', (event) => {
+    if (event.key !== 'Escape') return;
+    if (!$('install-dialog').hidden) closeInstall();
+    else if (!$('plugins-dialog').hidden) closePlugins();
+  });
 
   $('plugins-search').addEventListener('input', (event) => {
     pluginQuery = String(event.target.value || '').trim().toLowerCase();
@@ -695,8 +767,6 @@ function initPlugins() {
     renderPlugins();
   });
 
-  $('plugins-enable-all').addEventListener('click', () => bulkPluginAction(true));
-  $('plugins-disable-all').addEventListener('click', () => bulkPluginAction(false));
   initPluginDrop();
 }
 
@@ -772,6 +842,7 @@ async function runCheck(kind) {
   statusHoldUntil = 0;
   // 检查版本也要能换镜像：清单同样是 直连 / 镜像 轮换拉取的。
   updatingToolbox = isToolbox;
+  $(button).classList.add('neon-busy');
   setButtonLabel(button, isToolbox ? t('check.busyToolbox') : t('check.busyGame'));
   setProgress(
     isToolbox ? t('progress.connectingGithub') : t('progress.connectingGame'),
@@ -825,6 +896,7 @@ async function runCheck(kind) {
     updatingToolbox = false;
     busy = false;
     disableActions(false);
+    $(button).classList.remove('neon-busy');
   }
 }
 
@@ -839,6 +911,7 @@ async function runUpdate(kind) {
   const label = isToolbox ? t('check.toolbox') : t('check.game');
   statusHoldUntil = 0;
   updatingToolbox = isToolbox;
+  $(button).classList.add('neon-busy');
   setButtonLabel(button, isToolbox ? t('update.busyToolbox') : t('update.busyGame'));
   setProgress(
     isToolbox ? t('update.preparingToolbox') : t('update.preparingGame'),
@@ -881,6 +954,7 @@ async function runUpdate(kind) {
     refreshing = false;
     busy = false;
     disableActions(false);
+    $(button).classList.remove('neon-busy');
   }
 }
 
@@ -1247,6 +1321,92 @@ function initScrollThumb() {
   });
 }
 
+/** 椰果娘随机眨眼：每隔 2–6 秒闭眼约 110ms。 */
+function startBlinking() {
+  const blink = $('coconut-blink');
+  if (!blink) return;
+  function once() {
+    blink.classList.add('on');
+    setTimeout(() => blink.classList.remove('on'), 110);
+    setTimeout(once, 2200 + Math.random() * 3600);
+  }
+  setTimeout(once, 1800);
+}
+
+/** 背景蓝图装饰线：用可复现的伪随机点算法生成三角尺刻度 / 圆弧 / 辅助线。 */
+function drawBlueprint() {
+  const svg = $('blueprint');
+  if (!svg) return;
+  const W = 1180, H = 720;
+  let s = '';
+  const C = 'var(--blue)', CS = 'var(--blue-strong)';
+  const line = (x1, y1, x2, y2, c, w, op, dash) =>
+    `<line x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}" stroke="${c || C}" stroke-width="${w || 1}" opacity="${op || 0.5}"${dash ? ` stroke-dasharray="${dash}"` : ''}/>`;
+  const circ = (cx, cy, r, c, w, op, dash) =>
+    `<circle cx="${cx}" cy="${cy}" r="${r}" fill="none" stroke="${c || C}" stroke-width="${w || 1}" opacity="${op || 0.5}"${dash ? ` stroke-dasharray="${dash}"` : ''}/>`;
+  const txt = (x, y, t, op, size) =>
+    `<text x="${x}" y="${y}" fill="${CS}" opacity="${op || 0.5}" font-size="${size || 9}" font-family="monospace">${t}</text>`;
+
+  // 左上：圆规弧 + 放射角度刻度
+  const ox = 150, oy = 110;
+  [80, 130, 180].forEach((r, i) => { s += circ(ox, oy, r, C, 1, 0.26 - i * 0.05, '4 6'); });
+  s += circ(ox, oy, 130, CS, 1.1, 0.42);
+  for (let a = 0; a <= 180; a += 15) {
+    const rad = a * Math.PI / 180;
+    const r1 = a % 45 === 0 ? 138 : 134;
+    const r2 = a % 45 === 0 ? 150 : 140;
+    s += line(ox + r1 * Math.cos(rad), oy - r1 * Math.sin(rad), ox + r2 * Math.cos(rad), oy - r2 * Math.sin(rad), CS, 1, a % 45 === 0 ? 0.48 : 0.3);
+    if (a % 45 === 0) s += txt(ox + 162 * Math.cos(rad) - 8, oy - 162 * Math.sin(rad) + 3, a + '°', 0.34);
+  }
+  s += line(ox - 185, oy, ox + 185, oy, C, 1, 0.2, '2 6');
+  s += line(ox, oy - 185, ox, oy + 185, C, 1, 0.2, '2 6');
+  s += circ(ox, oy, 3, CS, 1.4, 0.5);
+
+  // 右下：直角三角尺 + 刻度
+  const tx = 830, ty = 470, base = 280, hgt = 165;
+  s += `<polygon points="${tx},${ty} ${tx + base},${ty} ${tx},${ty - hgt}" fill="none" stroke="${CS}" stroke-width="1.3" opacity="0.46"/>`;
+  const m = 28;
+  s += `<polygon points="${tx + m},${ty - m} ${tx + base - m - 45},${ty - m} ${tx + m},${ty - m - hgt + m + 32}" fill="none" stroke="${C}" stroke-width="1" opacity="0.34"/>`;
+  for (let i = 1; i < base / 12; i++) {
+    const x = tx + i * 12, long = i % 5 === 0;
+    s += line(x, ty, x, ty - (long ? 9 : 5), CS, 1, long ? 0.48 : 0.32);
+    if (long) s += txt(x - 6, ty + 15, String(i * 12), 0.38, 8);
+  }
+  for (let i = 1; i < hgt / 12; i++) {
+    const y = ty - i * 12, long = i % 5 === 0;
+    s += line(tx, y, tx + (long ? 9 : 5), y, CS, 1, long ? 0.48 : 0.32);
+  }
+  s += `<rect x="${tx}" y="${ty - 12}" width="12" height="12" fill="none" stroke="${CS}" stroke-width="1" opacity="0.46"/>`;
+
+  // 中部：贯穿辅助线 + 端点
+  s += line(380, 80, 820, 560, C, 1, 0.18, '6 7');
+  s += line(340, 560, 760, 210, C, 1, 0.14, '6 7');
+  [[380, 80], [820, 560], [340, 560], [760, 210]].forEach((p) => {
+    s += circ(p[0], p[1], 4, C, 1, 0.38);
+    s += circ(p[0], p[1], 1.5, CS, 1, 0.5);
+  });
+
+  // 散布装饰点（可复现）
+  let seed = 20251119;
+  const rnd = () => { seed = (seed * 9301 + 49297) % 233280; return seed / 233280; };
+  for (let i = 0; i < 48; i++) {
+    const x = 30 + rnd() * (W - 60), y = 30 + rnd() * (H - 60), r = rnd() * 1.6 + 0.5;
+    s += `<circle cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="${r.toFixed(1)}" fill="${CS}" opacity="${(0.1 + rnd() * 0.2).toFixed(2)}"/>`;
+  }
+  svg.innerHTML = s;
+}
+
+// 进入启动页时自动检查一次更新：工具箱与游戏数据串行执行，避免 busy 锁冲突。
+// 只做「检查」，不自动下载更新——发现新版本仍由用户点按钮触发更新。
+async function autoCheckOnEnter() {
+  if (!connected || busy) return;
+  await runCheck('toolbox');
+  // runCheck 结束会释放 busy；等一拍再查游戏数据，避免同一 tick 抢占。
+  await new Promise((resolve) => setTimeout(resolve, 350));
+  if (!connected || busy) return;
+  await runCheck('game');
+}
+
 async function init() {
   // 首屏先用系统主题铺一下，但**先不落盘**：不然每次启动都会把用户选的主题覆盖掉。
   paintTheme(darkQuery.matches ? 'dark' : 'light');
@@ -1292,6 +1452,8 @@ async function init() {
   initScrollThumb();
   fitTitle();
   fitByline();
+  // 每次进入自动检查一次更新（工具箱 + 游戏数据，串行）。
+  setTimeout(() => autoCheckOnEnter(), 600);
   if (document.fonts && document.fonts.ready) {
     document.fonts.ready
       .then(() => {
@@ -1322,6 +1484,10 @@ async function init() {
     fitByline();
   };
   $('coconut').addEventListener('click', cycleLanguage);
+  // 椰果娘眨眼
+  startBlinking();
+  // 蓝图装饰线
+  drawBlueprint();
 
   const poll = async () => {
     await refresh();

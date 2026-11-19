@@ -1,32 +1,34 @@
 :root {
   color-scheme: light;
-  --bg: #f4f4f2;
-  --bg-2: #e9e9e6;
-  --panel: rgba(255, 255, 255, 0.72);
-  --panel-solid: #ffffff;
-  --text: #0d0d0c;
-  --muted: #6d6d68;
-  --faint: #94948e;
-  --line: #d8d8d3;
-  --line-strong: #b9b9b2;
-  --primary-bg: linear-gradient(135deg, #262626 0%, #050505 100%);
+  --bg: #fdfaf4;
+  --bg-2: #f7f0e4;
+  --panel: rgba(255, 253, 248, 0.72);
+  --panel-solid: #fffdf8;
+  --text: #3f352d;
+  --muted: #806f5e;
+  --faint: #a2937f;
+  --line: #e9dfd0;
+  --line-strong: #ded1bd;
+  --primary-bg: linear-gradient(135deg, #6fae86 0%, #4e8c68 100%);
   --primary-text: #ffffff;
-  --secondary-bg: linear-gradient(180deg, #ffffff 0%, #ededeb 100%);
-  --secondary-text: #111110;
-  --red: #d9533f;
-  --yellow: #d9a92f;
-  --green: #4f9a63;
-  --red-soft: rgba(217, 83, 63, 0.16);
-  --yellow-soft: rgba(217, 169, 47, 0.16);
-  --green-soft: rgba(79, 154, 99, 0.16);
-  --glow: rgba(255, 255, 255, 0.55);
-  --orb-a: rgba(255, 255, 255, 0.9);
-  --orb-b: rgba(0, 0, 0, 0.05);
-  --shadow: 0 24px 70px rgba(0, 0, 0, 0.12);
-  /* 弹窗遮罩：白天用白色、夜间用黑色 */
+  --secondary-bg: linear-gradient(180deg, #ffffff 0%, #f7f0e4 100%);
+  --secondary-text: #3f352d;
+  --red: #e08b7c;
+  --yellow: #e6bf5c;
+  --green: #6fae86;
+  --green-d: #4e8c68;
+  --red-soft: rgba(224, 139, 124, 0.16);
+  --yellow-soft: rgba(230, 191, 92, 0.18);
+  --green-soft: rgba(111, 174, 134, 0.16);
+  --glow: rgba(255, 253, 247, 0.6);
+  --orb-a: rgba(255, 253, 247, 0.9);
+  --orb-b: rgba(201, 165, 123, 0.05);
+  --shadow: 0 22px 60px rgba(120, 96, 70, 0.18);
   --overlay: #ffffff;
-  /* 滚动条滑块：默认透明，靠悬停 / 焦点把它点亮 */
-  --scroll-thumb: rgba(13, 13, 12, 0.26);
+  --scroll-thumb: rgba(63, 53, 45, 0.26);
+  --dot: rgba(157, 123, 82, 0.34);
+  --blue: #cbb89c;
+  --blue-strong: #b7a280;
   --sans: "Inter", "SF Pro Display", "HarmonyOS Sans SC", "Microsoft YaHei UI", "Segoe UI", system-ui, sans-serif;
   /* 编辑部风味：拉丁先走 Georgia，中文落到宋体 */
   --serif: Georgia, "Source Han Serif SC", "Noto Serif SC", "Songti SC", STSong, SimSun, "Times New Roman", serif;
@@ -35,61 +37,69 @@
 
 :root[data-theme="dark"] {
   color-scheme: dark;
-  --bg: #080808;
-  --bg-2: #121212;
-  --panel: rgba(21, 21, 21, 0.72);
-  --panel-solid: #151515;
-  --text: #f4f4f1;
-  --muted: #9b9b95;
-  --faint: #70706a;
-  --line: #272727;
-  --line-strong: #3c3c39;
-  --primary-bg: linear-gradient(135deg, #ffffff 0%, #bdbdbd 100%);
-  --primary-text: #090909;
-  --secondary-bg: linear-gradient(180deg, #1d1d1d 0%, #111111 100%);
-  --secondary-text: #f4f4f1;
-  --red: #f0715b;
-  --yellow: #e6bc51;
-  --green: #6fbf82;
-  --red-soft: rgba(240, 113, 91, 0.16);
-  --yellow-soft: rgba(230, 188, 81, 0.16);
-  --green-soft: rgba(111, 191, 130, 0.16);
+  --bg: #181c1a;
+  --bg-2: #121614;
+  --panel: rgba(32, 38, 34, 0.72);
+  --panel-solid: #202622;
+  --text: #eef2ec;
+  --muted: #a9b3a6;
+  --faint: #778277;
+  --line: #2f3731;
+  --line-strong: #3a453d;
+  --primary-bg: linear-gradient(135deg, #79bd94 0%, #4e8c68 100%);
+  --primary-text: #0b1410;
+  --secondary-bg: linear-gradient(180deg, #202622 0%, #121614 100%);
+  --secondary-text: #eef2ec;
+  --red: #eb9c8d;
+  --yellow: #e6c669;
+  --green: #79bd94;
+  --green-d: #9bd7b3;
+  --red-soft: rgba(235, 156, 141, 0.15);
+  --yellow-soft: rgba(230, 198, 105, 0.15);
+  --green-soft: rgba(121, 189, 148, 0.16);
   --glow: rgba(255, 255, 255, 0.07);
   --orb-a: rgba(255, 255, 255, 0.13);
   --orb-b: rgba(255, 255, 255, 0.02);
   --shadow: 0 24px 80px rgba(0, 0, 0, 0.62);
   --overlay: #000000;
   --scroll-thumb: rgba(244, 244, 241, 0.24);
+  --dot: rgba(216, 184, 146, 0.22);
+  --blue: #3a443c;
+  --blue-strong: #4a564c;
 }
 
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme]) {
     color-scheme: dark;
-    --bg: #080808;
-    --bg-2: #121212;
-    --panel: rgba(21, 21, 21, 0.72);
-    --panel-solid: #151515;
-    --text: #f4f4f1;
-    --muted: #9b9b95;
-    --faint: #70706a;
-    --line: #272727;
-    --line-strong: #3c3c39;
-    --primary-bg: linear-gradient(135deg, #ffffff 0%, #bdbdbd 100%);
-    --primary-text: #090909;
-    --secondary-bg: linear-gradient(180deg, #1d1d1d 0%, #111111 100%);
-    --secondary-text: #f4f4f1;
-    --red: #f0715b;
-    --yellow: #e6bc51;
-    --green: #6fbf82;
-    --red-soft: rgba(240, 113, 91, 0.16);
-    --yellow-soft: rgba(230, 188, 81, 0.16);
-    --green-soft: rgba(111, 191, 130, 0.16);
+    --bg: #181c1a;
+    --bg-2: #121614;
+    --panel: rgba(32, 38, 34, 0.72);
+    --panel-solid: #202622;
+    --text: #eef2ec;
+    --muted: #a9b3a6;
+    --faint: #778277;
+    --line: #2f3731;
+    --line-strong: #3a453d;
+    --primary-bg: linear-gradient(135deg, #79bd94 0%, #4e8c68 100%);
+    --primary-text: #0b1410;
+    --secondary-bg: linear-gradient(180deg, #202622 0%, #121614 100%);
+    --secondary-text: #eef2ec;
+    --red: #eb9c8d;
+    --yellow: #e6c669;
+    --green: #79bd94;
+    --green-d: #9bd7b3;
+    --red-soft: rgba(235, 156, 141, 0.15);
+    --yellow-soft: rgba(230, 198, 105, 0.15);
+    --green-soft: rgba(121, 189, 148, 0.16);
     --glow: rgba(255, 255, 255, 0.07);
     --orb-a: rgba(255, 255, 255, 0.13);
     --orb-b: rgba(255, 255, 255, 0.02);
     --shadow: 0 24px 80px rgba(0, 0, 0, 0.62);
     --overlay: #000000;
-  --scroll-thumb: rgba(244, 244, 241, 0.24);
+    --scroll-thumb: rgba(244, 244, 241, 0.24);
+    --dot: rgba(216, 184, 146, 0.22);
+    --blue: #3a443c;
+    --blue-strong: #4a564c;
   }
 }
 
@@ -377,6 +387,70 @@ button {
 .plugins-link[data-off='true'] .plugins-dot {
   background: var(--faint);
   box-shadow: none;
+}
+
+/* 插件主按钮：与「启动工具箱」并排，奶白/奶黑偏灰，等高同圆角 */
+button.plugins-cta {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  height: 58px;
+  min-width: 132px;
+  padding: 0 22px;
+  border: 1px solid var(--line-strong);
+  border-radius: 14px;
+  background: linear-gradient(180deg,
+    color-mix(in srgb, var(--panel-solid) 88%, var(--muted) 12%) 0%,
+    color-mix(in srgb, var(--bg-2) 92%, var(--muted) 8%) 100%);
+  color: var(--text);
+  font-size: 14px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  box-shadow: 0 8px 26px color-mix(in srgb, var(--text) 6%, transparent);
+}
+button.plugins-cta:hover {
+  transform: translateY(-2px);
+  border-color: var(--green);
+  box-shadow: 0 14px 32px color-mix(in srgb, var(--text) 12%, transparent);
+}
+button.plugins-cta:disabled {
+  transform: none;
+}
+.plugins-cta .plugins-cta-icon {
+  width: 19px;
+  height: 19px;
+  flex: none;
+  color: var(--green-d, var(--green));
+  transition: transform 0.18s ease;
+}
+button.plugins-cta:hover .plugins-cta-icon {
+  transform: rotate(22deg);
+}
+.plugins-cta .plugins-dot {
+  width: 6px;
+  height: 6px;
+}
+
+/* ── 更新 / 检查中：按钮边框呼吸霓虹 ── */
+button.secondary.check-chip.neon-busy,
+button.plugins-cta.neon-busy {
+  animation: neon-breathe 1.25s ease-in-out infinite;
+  /* 检查/更新中按钮是 disabled，但要盖掉 :disabled 的 opacity:0.48，让霓虹看得见 */
+  opacity: 1 !important;
+}
+@keyframes neon-breathe {
+  0%, 100% {
+    border-color: color-mix(in srgb, var(--green) 55%, var(--line-strong));
+    box-shadow: 0 0 0 1px color-mix(in srgb, var(--green) 20%, transparent),
+                0 0 7px 0 color-mix(in srgb, var(--green) 28%, transparent);
+  }
+  50% {
+    border-color: var(--green);
+    box-shadow: 0 0 0 2px color-mix(in srgb, var(--green) 45%, transparent),
+                0 0 18px 3px color-mix(in srgb, var(--green) 58%, transparent),
+                0 0 34px 6px color-mix(in srgb, var(--green) 26%, transparent);
+  }
 }
 
 /* ── 插件管理弹窗 ──
@@ -2144,4 +2218,251 @@ button.key-button:hover {
     animation-iteration-count: 1 !important;
     transition-duration: 0.001ms !important;
   }
+}
+/* ============================================================
+   二次元启动页视觉（椰果娘 + 点阵 + 蓝图 + 绿色主调）
+   —— 追加在文件末尾，覆盖上面的默认灰白主题，不动原功能布局。
+   ============================================================ */
+
+/* 立绘：透明底 + 浮动 + 眨眼叠层 */
+.hero-visual {
+  min-height: 420px;
+}
+.coconut-stage {
+  width: min(34vw, 330px);
+  aspect-ratio: 411 / 760;
+}
+.coconut-stage::before {
+  width: 118%;
+  height: 78%;
+  inset: auto;
+  left: -9%;
+  bottom: 6%;
+  border-radius: 50%;
+  background: radial-gradient(circle, var(--glow) 0, var(--cream-soft, var(--orb-a)) 52%, transparent 72%);
+  filter: blur(6px);
+  opacity: 0.7;
+}
+.coconut-icon {
+  width: 100%;
+  height: 100%;
+  border-radius: 0;
+  object-fit: contain;
+  box-shadow: none;
+  filter: drop-shadow(0 18px 22px rgba(120, 96, 70, 0.24));
+  animation: float 6s ease-in-out infinite;
+}
+.coconut-blink {
+  position: absolute;
+  inset: 0;
+  opacity: 0;
+  transition: opacity 0.06s;
+  pointer-events: none;
+}
+.coconut-blink.on {
+  opacity: 1;
+}
+
+/* 点阵背景：越靠右下越明显 */
+.app::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: 0;
+  background-image: radial-gradient(circle, var(--dot) 1.15px, transparent 1.25px);
+  background-size: 17px 17px;
+  -webkit-mask-image: linear-gradient(135deg, transparent 42%, rgba(0, 0, 0, 0.16) 66%, rgba(0, 0, 0, 0.55) 85%, #000 100%);
+  mask-image: linear-gradient(135deg, transparent 42%, rgba(0, 0, 0, 0.16) 66%, rgba(0, 0, 0, 0.55) 85%, #000 100%);
+}
+/* 蓝图装饰线 */
+.blueprint {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+  z-index: 0;
+  opacity: 0.9;
+}
+/* 让内容浮在装饰层之上 */
+.app > .titlebar,
+.app > .header,
+.app > .hero,
+.app > .footer {
+  position: relative;
+  z-index: 1;
+}
+
+/* 主按钮：绿色更饱满、圆角更柔和 */
+button.primary {
+  border-radius: 14px;
+  box-shadow: 0 12px 26px rgba(78, 140, 104, 0.34);
+  font-weight: 700;
+  letter-spacing: 1px;
+}
+button.primary:hover {
+  box-shadow: 0 16px 32px rgba(78, 140, 104, 0.44);
+}
+
+/* 插件弹窗批量按钮：合并后的单一按钮 */
+.plugins-bulk button {
+  border-color: var(--green);
+  color: var(--green-d);
+  font-weight: 600;
+}
+.plugins-bulk button:hover:not(:disabled) {
+  background: var(--green-soft);
+  border-color: var(--green);
+}
+
+/* 添加插件：独立弹窗（复用插件弹窗的视觉语言） */
+.install-dialog {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: color-mix(in srgb, var(--overlay) 46%, transparent);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+}
+.install-dialog[hidden] {
+  display: none;
+}
+.install-panel {
+  width: min(520px, 100%);
+  max-height: min(86vh, 640px);
+  display: flex;
+  flex-direction: column;
+  background: linear-gradient(160deg, var(--panel-solid), var(--bg-2));
+  border: 1px solid var(--line);
+  border-radius: 20px;
+  box-shadow: var(--shadow);
+  overflow: hidden;
+  animation: dialog-pop 0.26s cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+@keyframes dialog-pop {
+  from { opacity: 0; transform: translateY(12px) scale(0.98); }
+  to { opacity: 1; transform: none; }
+}
+.install-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 18px 22px;
+  border-bottom: 1px solid var(--line);
+}
+.install-ident {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.install-glyph {
+  width: 38px;
+  height: 38px;
+  border-radius: 12px;
+  display: grid;
+  place-items: center;
+  font-size: 21px;
+  font-weight: 600;
+  color: var(--green-d);
+  background: var(--green-soft);
+}
+.install-head h2 {
+  margin: 0;
+  font-size: 17px;
+  letter-spacing: 0.5px;
+}
+.install-head p {
+  margin: 3px 0 0;
+  font-size: 11px;
+  color: var(--faint);
+}
+.install-body {
+  padding: 18px 22px 22px;
+  overflow-y: auto;
+  flex: 1;
+}
+.addtabs {
+  display: flex;
+  gap: 5px;
+  margin-bottom: 18px;
+  background: var(--bg-2);
+  border: 1px solid var(--line);
+  border-radius: 11px;
+  padding: 4px;
+}
+.addtabs button {
+  flex: 1;
+  border: 0;
+  background: none;
+  color: var(--muted);
+  font-size: 12px;
+  padding: 9px;
+  border-radius: 8px;
+  cursor: pointer;
+  transition: 0.2s;
+}
+.addtabs button.on {
+  background: var(--green);
+  color: #fff;
+  font-weight: 600;
+  box-shadow: 0 4px 12px rgba(78, 140, 104, 0.25);
+}
+.addview[hidden] {
+  display: none;
+}
+.dropzone {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 9px;
+  min-height: 200px;
+  padding: 20px;
+  border: 1.5px dashed var(--line-strong);
+  border-radius: 14px;
+  background: var(--panel-solid);
+  cursor: pointer;
+  transition: 0.2s;
+  text-align: center;
+}
+.dropzone:hover,
+.install-dialog[data-drag='true'] .dropzone {
+  border-color: var(--green);
+  background: var(--green-soft);
+}
+.dropzone-ico {
+  width: 46px;
+  height: 46px;
+  border-radius: 50%;
+  display: grid;
+  place-items: center;
+  font-size: 22px;
+  color: var(--green-d);
+  background: var(--green-soft);
+}
+.dropzone strong {
+  font-size: 13px;
+  color: var(--text);
+}
+.dropzone-sub {
+  font-size: 11px;
+  color: var(--faint);
+}
+#addview-url .install-url-row {
+  margin-top: 4px;
+}
+.install-foot {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 22px;
+  border-top: 1px solid var(--line);
+  font-size: 10px;
+  color: var(--faint);
 }

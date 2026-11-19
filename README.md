@@ -315,14 +315,14 @@ node node_modules/@tauri-apps/cli/tauri.js build
 
 ### 三平台自动构建（GitHub Actions）
 
-<code>.github/workflows/release-app.yml</code>：push <code>v*</code> tag（或 Actions 页面手动
-<code>workflow_dispatch</code>）会跑四路构建：
+<code>.github/workflows/release-app.yml</code>：push 到 <code>main</code>、push <code>v*</code> tag
+（或 Actions 页面手动 <code>workflow_dispatch</code>）会跑四路构建：
 
 | Runner | 目标 | 产物 |
 | --- | --- | --- |
 | windows-latest | x86_64-pc-windows-msvc | MSI 安装包 + 单文件便携 exe |
 | macos-latest | aarch64-apple-darwin | .app / .dmg（未签名） |
-| macos-13 | x86_64-apple-darwin | .app / .dmg（未签名） |
+| macos-15-intel | x86_64-apple-darwin | .app / .dmg（未签名） |
 | ubuntu-22.04 | x86_64-unknown-linux-gnu | .deb + .AppImage |
 
 - Release 资产统一用固定 ASCII 文件名，方便分享站写死直链：
@@ -333,10 +333,16 @@ node node_modules/@tauri-apps/cli/tauri.js build
   | <code>coconut-app-macos-aarch64.dmg</code> / <code>coconut-app-macos-x64.dmg</code> | macOS |
   | <code>coconut-app-linux-x64.deb</code> / <code>coconut-app-linux-x64.AppImage</code> | Linux x64 |
 
-- tag 构建会自动创建 GitHub Release 并附上全部产物；手动触发只上传 workflow artifact；
+- **push 到 main 就会自动发版**：<code>prepare</code> job 读 <code>package.json</code> 的版本号凑成
+  <code>v&lt;版本&gt;</code>，这个 tag 还没有 Release 才继续四路构建并发版；
+  版本号没动（Release 已存在）就整体跳过，不会重复发；
+- 仍然可以直接 push <code>v0.3.2</code> 这种 tag 发版（tag 名优先于 package.json）；
+- 手动 <code>workflow_dispatch</code> 只构建并上传 workflow artifact，不发版；
 - 构建前会先跑 <code>npm run builtin</code> 打包内置插件（现在 builtin/ 下没有子目录时自动跳过）；
 - 发版流程：改 <code>package.json</code> / <code>src-tauri/tauri.conf.json</code> /
-  <code>src-tauri/Cargo.toml</code> 三处版本号 → <code>git tag v0.3.2 && git push --tags</code>；
+  <code>src-tauri/Cargo.toml</code> 三处版本号 → 提交并 push 到 <code>main</code> 即可；
+  想跳过版本号直接重发某个版本时，才手动打 tag：
+  <code>git tag v0.3.2 &amp;&amp; git push origin v0.3.2</code>；
 - 仓库 <code>Settings → Actions → General → Workflow permissions</code> 需要选
   <code>Read and write permissions</code>，否则创建 Release 会 403。
 

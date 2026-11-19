@@ -2230,7 +2230,8 @@ button.key-button:hover {
 }
 .coconut-stage {
   width: min(34vw, 330px);
-  aspect-ratio: 411 / 760;
+  /* 立绘换了新图：裁切后是 585 × 1000，容器比例跟着走，避免 contain 留白 */
+  aspect-ratio: 585 / 1000;
 }
 .coconut-stage::before {
   width: 118%;

@@ -1,8 +1,10 @@
 # 椰果工具箱启动器 · 三平台发布构建
 #
 # 触发方式：
-#   1. push 形如 v0.3.1 的 tag        → 构建并创建 GitHub Release
-#   2. Actions 页面手动 workflow_dispatch → 只构建并上传 artifact（不发版）
+#   1. push 到 main                   → 读 package.json 的版本号，凑成 v<版本>；
+#                                      这个 tag 还没有 Release 才构建并发版，版本号没动就整体跳过
+#   2. push 形如 v0.3.1 的 tag        → 构建并创建 GitHub Release
+#   3. Actions 页面手动 workflow_dispatch → 只构建并上传 artifact（不发版）
 #
 # 平台矩阵：
 #   windows-latest    → MSI 安装包 + 单文件便携 exe（WebView2 由系统提供）
@@ -16,6 +18,8 @@ name: Release Launcher
 
 on:
   push:
+    branches:
+      - main
     tags:
       - 'v*'
   workflow_dispatch:
@@ -24,8 +28,53 @@ env:
   APP_NAME: coconut-app
 
 jobs:
+  # 发版前先算清楚「这次要不要发、发哪个 tag」，避免版本号没动的 main push 白跑四路构建。
+  prepare:
+    name: Resolve release tag
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      tag: ${{ steps.plan.outputs.tag }}
+      skip: ${{ steps.plan.outputs.skip }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          sparse-checkout: package.json
+
+      - name: Resolve tag and decide whether to publish
+        id: plan
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [[ "$GITHUB_EVENT_NAME" == "workflow_dispatch" ]]; then
+            echo "tag=" >> "$GITHUB_OUTPUT"
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+            echo "手动触发：只构建，不发版"
+            exit 0
+          fi
+
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            tag="${GITHUB_REF#refs/tags/}"
+          else
+            tag="v$(node -p "require('./package.json').version")"
+          fi
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+
+          if gh release view "$tag" >/dev/null 2>&1; then
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            echo "::notice::$tag 已经有 Release 了，跳过本次构建"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+            echo "将构建并发布 $tag"
+          fi
+
   build:
     name: ${{ matrix.label }}
+    needs: prepare
+    if: needs.prepare.outputs.skip != 'true'
     runs-on: ${{ matrix.os }}
     permissions:
       contents: read
@@ -180,8 +229,11 @@ jobs:
 
   release:
     name: Publish release
-    if: startsWith(github.ref, 'refs/tags/v')
-    needs: build
+    # tag 推送、或 main 推送里版本号有新 Release 时才发版；手动 dispatch 只出 artifact。
+    needs:
+      - prepare
+      - build
+    if: needs.prepare.outputs.skip != 'true' && needs.prepare.outputs.tag != ''
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -198,6 +250,7 @@ jobs:
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: ${{ needs.prepare.outputs.tag }}
           files: dist/*
           generate_release_notes: true
           fail_on_unmatched_files: true

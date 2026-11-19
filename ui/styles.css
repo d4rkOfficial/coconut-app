@@ -188,17 +188,17 @@ button {
   z-index: 1;
   display: flex;
   flex-direction: column;
-  width: min(1180px, 100%);
+  width: 100%;
   min-height: 100vh;
   margin: 0 auto;
-  padding: clamp(46px, 4.4vw, 60px) clamp(24px, 4.6vw, 54px) clamp(18px, 2.6vw, 30px);
+  /* 标题栏是 fixed 的 38px，这里只留出它下面的一点呼吸位；窗口多宽就铺多宽，不再留右侧空档 */
+  padding: clamp(44px, 3.4vw, 54px) clamp(24px, 3.4vw, 52px) clamp(18px, 2.6vw, 30px);
 }
 
 .header {
   display: flex;
   align-items: center;
   min-height: 46px;
-  padding-right: 92px;
   animation: fade-down 0.65s cubic-bezier(0.2, 0.7, 0.2, 1) both;
 }
 
@@ -370,23 +370,17 @@ button {
   width: 6px;
   height: 6px;
   border-radius: 999px;
-  background: var(--green);
-  box-shadow: 0 0 0 3px color-mix(in srgb, var(--green) 16%, transparent);
+  /* 默认黄灯：表示「插件系统正常，可以点」 */
+  background: var(--yellow);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--yellow) 18%, transparent);
   transition: background 0.16s ease, box-shadow 0.16s ease;
 }
 
-.plugins-link[data-error='true'] .plugins-dot {
+/* 有插件报错 -> 红灯 */
+.plugins-link[data-error='true'] .plugins-dot,
+button.plugins-cta[data-error='true'] .plugins-dot {
   background: var(--red);
   box-shadow: 0 0 0 3px color-mix(in srgb, var(--red) 18%, transparent);
-}
-
-.plugins-link[data-off='true'] {
-  color: var(--faint);
-}
-
-.plugins-link[data-off='true'] .plugins-dot {
-  background: var(--faint);
-  box-shadow: none;
 }
 
 /* 插件主按钮：与「启动工具箱」并排，奶白/奶黑偏灰，等高同圆角 */
@@ -1904,10 +1898,12 @@ button.mirror-link:disabled {
   transition: transform 0.22s cubic-bezier(0.2, 0.7, 0.2, 1);
 }
 
-/* 光晕 / 虚线环只是装饰，不能吃掉点击（否则长按会落到 stage 上）。 */
+/* 光晕 / 虚线环只是装饰，不能吃掉点击（否则长按会落到 stage 上）；
+   它们要永远压在立绘下面（z-index 0 < 立绘层 1）。 */
 .coconut-stage::before,
 .coconut-stage::after {
   pointer-events: none;
+  z-index: 0;
 }
 
 .coconut-stage.pressing {
@@ -2179,10 +2175,6 @@ button.key-button:hover {
     width: 100%;
   }
 
-  .header {
-    padding-right: 62px;
-  }
-
   .eyebrow {
     font-size: 13px;
   }
@@ -2229,9 +2221,12 @@ button.key-button:hover {
   min-height: 420px;
 }
 .coconut-stage {
-  width: min(34vw, 330px);
-  /* 立绘换了新图：裁切后是 585 × 1000，容器比例跟着走，避免 contain 留白 */
-  aspect-ratio: 585 / 1000;
+  /* 立绘裁切后是 594 × 1000（scripts/make-coconut-frames.mjs 输出）。
+     按视口高度定尺寸，保证标题栏 / 页脚都在画面内，不会让立绘顶出窗口下边缘。 */
+  height: min(62vh, 540px);
+  width: auto;
+  max-width: min(34vw, 380px);
+  aspect-ratio: 594 / 1000;
 }
 .coconut-stage::before {
   width: 118%;
@@ -2244,27 +2239,36 @@ button.key-button:hover {
   filter: blur(6px);
   opacity: 0.7;
 }
+/* 浮动挂在包裹层上：眨眼的两张图共用同一个 transform，绝不会各飘各的；
+   z-index 1 保证立绘压在 stage 的光晕 / 虚线环之上。 */
+.coconut-float {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  animation: float 6s ease-in-out infinite;
+}
 .coconut-icon {
+  position: absolute;
+  inset: 0;
   width: 100%;
   height: 100%;
   border-radius: 0;
   object-fit: contain;
+  object-position: center top;
   box-shadow: none;
   filter: drop-shadow(0 18px 22px rgba(120, 96, 70, 0.24));
-  animation: float 6s ease-in-out infinite;
+  animation: none;
 }
 .coconut-blink {
-  position: absolute;
-  inset: 0;
   opacity: 0;
-  transition: opacity 0.06s;
+  transition: opacity 0.08s;
   pointer-events: none;
 }
 .coconut-blink.on {
   opacity: 1;
 }
 
-/* 点阵背景：越靠右下越明显 */
+/* 点阵背景：整张底都有，越靠右下越明显（不再要跑到右下角才看得见） */
 .app::before {
   content: "";
   position: absolute;
@@ -2273,8 +2277,27 @@ button.key-button:hover {
   z-index: 0;
   background-image: radial-gradient(circle, var(--dot) 1.15px, transparent 1.25px);
   background-size: 17px 17px;
-  -webkit-mask-image: linear-gradient(135deg, transparent 42%, rgba(0, 0, 0, 0.16) 66%, rgba(0, 0, 0, 0.55) 85%, #000 100%);
-  mask-image: linear-gradient(135deg, transparent 42%, rgba(0, 0, 0, 0.16) 66%, rgba(0, 0, 0, 0.55) 85%, #000 100%);
+  -webkit-mask-image: linear-gradient(135deg, rgba(0, 0, 0, 0.34) 0%, rgba(0, 0, 0, 0.42) 46%, rgba(0, 0, 0, 0.72) 76%, #000 100%);
+  mask-image: linear-gradient(135deg, rgba(0, 0, 0, 0.34) 0%, rgba(0, 0, 0, 0.42) 46%, rgba(0, 0, 0, 0.72) 76%, #000 100%);
+}
+
+/* 点阵「聚光灯」：跟着鼠标走的一小块，把光标附近的点阵提亮。
+   --cursor-x / --cursor-y 由 main.js 用 rAF 节流写进来，默认落在屏幕外。 */
+.app::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: 0;
+  background-image: radial-gradient(circle, var(--dot) 1.15px, transparent 1.25px);
+  background-size: 17px 17px;
+  opacity: 0;
+  transition: opacity 0.35s ease;
+  -webkit-mask-image: radial-gradient(circle 190px at var(--cursor-x, -400px) var(--cursor-y, -400px), #000 0%, rgba(0, 0, 0, 0.55) 46%, transparent 78%);
+  mask-image: radial-gradient(circle 190px at var(--cursor-x, -400px) var(--cursor-y, -400px), #000 0%, rgba(0, 0, 0, 0.55) 46%, transparent 78%);
+}
+.app.cursor-on::after {
+  opacity: 1;
 }
 /* 蓝图装饰线 */
 .blueprint {
@@ -2286,8 +2309,7 @@ button.key-button:hover {
   z-index: 0;
   opacity: 0.9;
 }
-/* 让内容浮在装饰层之上 */
-.app > .titlebar,
+/* 让内容浮在装饰层之上（标题栏本身是 fixed + z-index 30，不在这里改定位） */
 .app > .header,
 .app > .hero,
 .app > .footer {

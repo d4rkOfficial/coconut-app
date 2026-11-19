@@ -239,11 +239,10 @@ function setPluginBadge(list) {
   const button = $('plugins');
   if (!button) return;
   const errored = list.some((plugin) => plugin.errors > 0);
-  const off = list.length > 0 && !list.some((plugin) => plugin.enabled);
-  button.dataset.error = errored ? 'true' : 'false';
-  button.dataset.off = off ? 'true' : 'false';
   const enabled = list.filter((plugin) => plugin.enabled).length;
-  $('plugins-label').textContent = off ? t('plugins.allOff') : t('plugins.button');
+  // 文案固定「插件」，状态只靠小圆点：默认黄灯，有插件报错才变红灯。
+  button.dataset.error = errored ? 'true' : 'false';
+  $('plugins-label').textContent = t('plugins.button');
   button.title = t(errored ? 'plugins.badgeTipError' : 'plugins.badgeTip', {
     count: list.length,
     enabled,
@@ -1389,15 +1388,131 @@ function drawBlueprint() {
   // 散布装饰点（可复现）
   let seed = 20251119;
   const rnd = () => { seed = (seed * 9301 + 49297) % 233280; return seed / 233280; };
-  for (let i = 0; i < 48; i++) {
+
+  // ── 追加的几何装饰（都是压在文字与立绘下面的背景层） ──
+  const arc = (cx, cy, r, a0, a1, c, w, op, dash) => {
+    const p0 = [cx + r * Math.cos((a0 * Math.PI) / 180), cy - r * Math.sin((a0 * Math.PI) / 180)];
+    const p1 = [cx + r * Math.cos((a1 * Math.PI) / 180), cy - r * Math.sin((a1 * Math.PI) / 180)];
+    const large = Math.abs(a1 - a0) > 180 ? 1 : 0;
+    return `<path d="M${p0[0].toFixed(1)} ${p0[1].toFixed(1)} A${r} ${r} 0 ${large} 0 ${p1[0].toFixed(1)} ${p1[1].toFixed(1)}" fill="none" stroke="${c || C}" stroke-width="${w || 1}" opacity="${op || 0.4}"${dash ? ` stroke-dasharray="${dash}"` : ''}/>`;
+  };
+  const cross = (x, y, size, op) =>
+    line(x - size, y, x + size, y, CS, 1, op || 0.4) + line(x, y - size, x, y + size, CS, 1, op || 0.4);
+
+  // 左上角：细网格（工程图纸的底纹）
+  for (let i = 0; i <= 6; i++) {
+    s += line(28 + i * 26, 24, 28 + i * 26, 24 + 156, C, 1, i % 3 === 0 ? 0.14 : 0.07);
+    s += line(28, 24 + i * 26, 28 + 156, 24 + i * 26, C, 1, i % 3 === 0 ? 0.14 : 0.07);
+  }
+  s += txt(30, 196, 'GRID 26', 0.26, 8);
+
+  // 左下角：同心环 + 放射刻度 + 半径标注
+  const lx = 120, ly = 640;
+  [40, 78, 118, 165].forEach((r, i) => { s += circ(lx, ly, r, i === 2 ? CS : C, 1, 0.3 - i * 0.045, i % 2 ? '3 5' : ''); });
+  for (let a = 0; a < 360; a += 10) {
+    const rad = (a * Math.PI) / 180;
+    const outer = a % 30 === 0 ? 172 : 168;
+    s += line(
+      lx + 165 * Math.cos(rad), ly - 165 * Math.sin(rad),
+      lx + outer * Math.cos(rad), ly - outer * Math.sin(rad),
+      CS, 1, a % 30 === 0 ? 0.34 : 0.18,
+    );
+  }
+  s += line(lx, ly, lx + 165 * Math.cos(Math.PI / 6), ly - 165 * Math.sin(Math.PI / 6), CS, 1, 0.36, '5 4');
+  s += txt(lx + 74, ly - 58, 'R 165', 0.32, 8);
+  s += cross(lx, ly, 6, 0.46);
+
+  // 右上角：坐标轴 + 抛物线 + 采样点
+  const rx = 1044, ry = 150;
+  s += line(rx - 190, ry, rx + 34, ry, C, 1, 0.24);
+  s += line(rx, ry + 150, rx, ry - 74, C, 1, 0.24);
+  s += `<path d="M${rx - 168} ${ry + 96} Q${rx - 74} ${ry - 96} ${rx + 18} ${ry + 34}" fill="none" stroke="${CS}" stroke-width="1.2" opacity="0.4" stroke-dasharray="7 5"/>`;
+  for (let i = 0; i < 6; i++) {
+    const t = i / 5;
+    const px = rx - 168 + 186 * t;
+    const py = ry + 96 - 192 * t + 130 * t * t;
+    s += circ(px, py, 2.4, CS, 1, 0.42);
+  }
+  s += txt(rx + 40, ry - 66, 'f(x)', 0.3, 8);
+  s += txt(rx - 186, ry + 16, 'O', 0.34, 9);
+
+  // 中下：半圆量角器（180° 刻度）
+  const gx = 560, gy = 700;
+  [86, 118].forEach((r, i) => { s += arc(gx, gy, r, 0, 180, i ? CS : C, 1, 0.28, i ? '' : '4 6'); });
+  for (let a = 0; a <= 180; a += 5) {
+    const rad = (a * Math.PI) / 180;
+    const long = a % 30 === 0;
+    const r1 = 118;
+    const r2 = long ? 104 : 111;
+    s += line(gx + r1 * Math.cos(rad), gy - r1 * Math.sin(rad), gx + r2 * Math.cos(rad), gy - r2 * Math.sin(rad), CS, 1, long ? 0.34 : 0.18);
+  }
+  s += line(gx - 132, gy, gx + 132, gy, C, 1, 0.2, '2 6');
+
+  // 右下：斜向排线阴影（等距平行线）
+  for (let i = 0; i < 14; i++) {
+    const off = i * 15;
+    s += line(950 + off, 720, 1180 + off, 490, C, 1, 0.06);
+  }
+
+  // 顶部横贯尺寸线（带端点与数值）
+  s += line(260, 54, 900, 54, CS, 1, 0.24, '5 5');
+  s += line(260, 44, 260, 64, CS, 1, 0.32);
+  s += line(900, 44, 900, 64, CS, 1, 0.32);
+  s += txt(548, 48, '960', 0.3, 8);
+
+  // 几个定位十字
+  [[420, 300], [980, 620], [700, 120], [120, 300]].forEach(([x, y]) => { s += cross(x, y, 7, 0.3); });
+
+  // 小三角 / 菱形点缀
+  s += `<polygon points="880,300 918,300 899,266" fill="none" stroke="${CS}" stroke-width="1" opacity="0.28"/>`;
+  s += `<polygon points="240,430 268,444 240,458 212,444" fill="none" stroke="${C}" stroke-width="1" opacity="0.26"/>`;
+
+  for (let i = 0; i < 64; i++) {
     const x = 30 + rnd() * (W - 60), y = 30 + rnd() * (H - 60), r = rnd() * 1.6 + 0.5;
     s += `<circle cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="${r.toFixed(1)}" fill="${CS}" opacity="${(0.1 + rnd() * 0.2).toFixed(2)}"/>`;
   }
   svg.innerHTML = s;
 }
 
-// 进入启动页时自动检查一次更新：工具箱与游戏数据串行执行，避免 busy 锁冲突。
-// 只做「检查」，不自动下载更新——发现新版本仍由用户点按钮触发更新。
+/**
+ * 点阵聚光灯：把鼠标位置写进 CSS 变量 --cursor-x / --cursor-y，
+ * `.app::after` 用一层跟着光标走的径向蒙版，把光标附近的点阵提亮。
+ * 节流到每帧一次，避免 pointermove 高频写样式。
+ */
+function initCursorDots() {
+  const app = document.querySelector('.app');
+  if (!app) return;
+  let frame = 0;
+  let x = -400;
+  let y = -400;
+
+  const paint = () => {
+    frame = 0;
+    app.style.setProperty('--cursor-x', `${x}px`);
+    app.style.setProperty('--cursor-y', `${y}px`);
+  };
+
+  const onMove = (event) => {
+    const rect = app.getBoundingClientRect();
+    x = event.clientX - rect.left;
+    y = event.clientY - rect.top;
+    app.classList.add('cursor-on');
+    if (!frame) frame = requestAnimationFrame(paint);
+  };
+
+  // pointermove 和 mousemove 都挂上：老 WebView2 上个别情况只来其中一个
+  window.addEventListener('pointermove', onMove, { passive: true });
+  window.addEventListener('mousemove', onMove, { passive: true });
+  window.addEventListener('pointerdown', onMove, { passive: true });
+
+  // 指针离开窗口就把聚光灯淡掉
+  const dim = () => app.classList.remove('cursor-on');
+  window.addEventListener('blur', dim);
+  document.addEventListener('pointerleave', dim);
+  app.addEventListener('pointerleave', dim);
+}
+
+// 进入启动页时自动检查一次更新：工具箱与游戏数据串行执行，避免 busy 锁冲突。// 只做「检查」，不自动下载更新——发现新版本仍由用户点按钮触发更新。
 async function autoCheckOnEnter() {
   if (!connected || busy) return;
   await runCheck('toolbox');
@@ -1488,6 +1603,8 @@ async function init() {
   startBlinking();
   // 蓝图装饰线
   drawBlueprint();
+  // 点阵聚光灯（跟随鼠标）
+  initCursorDots();
 
   const poll = async () => {
     await refresh();

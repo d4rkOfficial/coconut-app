@@ -122,6 +122,11 @@ cp manifest.json src-tauri/toolbox-static/manifest.json
 - 顶部：<code>Wuthering Waves Coconut Toolbox</code> / <code>Vol. 1 — 排轴 / 拉表 / 配装 / 计算</code>。
 - 底部：<code>鸣潮社区公益工具</code>。
 - 主按钮：启动工具箱。
+- **检查 / 更新期间主按钮变红，文案是「停止更新」**：点它立刻停止当前的检查或下载
+  （手动检查、手动更新、游戏数据拉取、启动时的自动更新都算），停止后按钮恢复「启动工具箱」。
+- **工具箱页面有下载行为时自动打开系统下载目录**：在工具箱里导出工程、下载文件等，
+  启动器会立刻弹出系统「下载」文件夹（Windows 资源管理器 / macOS Finder / Linux 文件管理器），
+  多条下载在 1.2 秒内只弹一次。
 - 两个检查按钮：检查工具箱版本更新、检查游戏数据版本更新。
   检查结果 3 秒后恢复默认文案，且两个按钮文案不同：
   「工具箱已是最新版本」/「游戏数据已是最新版本」。
@@ -263,8 +268,25 @@ dist\coconut-app.exe
 - 无需 Node / git / pnpm
 - 游戏数据未缓存时，<code>/api/*</code> 反代到官方 API，需要网络
 - 点「检查游戏数据版本更新」可把 API 数据与图标拉到本地（先增量后全量），之后优先读本地文件
-- 拉取期间可以直接启动工具箱，数据在后台继续拉取
+- 拉取期间主按钮是红色的「停止更新」，点它随时停止；停止后即可正常启动工具箱
 - 免费模型和 AI 助手仍然需要网络
+
+### 工具箱下载 → 弹出系统下载目录
+
+主窗口改成在 Rust 里用 <code>WebviewWindowBuilder::from_config</code> 创建
+（<code>tauri.conf.json</code> 的窗口加 <code>"create": false</code>），这样才能挂上
+<code>on_download</code>：工具箱页面（例如导出工程）一旦发起下载，启动器就用系统命令
+把下载目录弹出来。
+
+| 平台 | 命令 | 下载目录 |
+| --- | --- | --- |
+| Windows | <code>explorer.exe &lt;dir&gt;</code> | <code>PathResolver::download_dir()</code>（Known Folder） |
+| macOS | <code>open &lt;dir&gt;</code> | <code>~/Downloads</code> |
+| Linux | <code>xdg-open &lt;dir&gt;</code> | XDG <code>DOWNLOAD</code>，取不到就 <code>~/Downloads</code> |
+
+下载事件在 UI 线程同步回调，处理器里**只读启动器自己的状态**，不调用任何会 dispatch
+回主线程的 webview API（否则死锁）；1.2 秒内的多条下载只弹一次窗口。
+下载本身仍然走 WebView 的默认保存位置，启动器只负责打开目录。
 
 ### 单文件便携
 
@@ -353,13 +375,13 @@ npm run frames   # assets/coconut/{open,blink}.png 对齐裁切 -> ui/coconut-{o
 - **push 到 main 就会自动发版**：<code>prepare</code> job 读 <code>package.json</code> 的版本号凑成
   <code>v&lt;版本&gt;</code>，这个 tag 还没有 Release 才继续四路构建并发版；
   版本号没动（Release 已存在）就整体跳过，不会重复发；
-- 仍然可以直接 push <code>v0.3.2</code> 这种 tag 发版（tag 名优先于 package.json）；
+- 仍然可以直接 push <code>v0.4.0</code> 这种 tag 发版（tag 名优先于 package.json）；
 - 手动 <code>workflow_dispatch</code> 只构建并上传 workflow artifact，不发版；
 - 构建前会先跑 <code>npm run builtin</code> 打包内置插件（现在 builtin/ 下没有子目录时自动跳过）；
 - 发版流程：改 <code>package.json</code> / <code>src-tauri/tauri.conf.json</code> /
   <code>src-tauri/Cargo.toml</code> 三处版本号 → 提交并 push 到 <code>main</code> 即可；
   想跳过版本号直接重发某个版本时，才手动打 tag：
-  <code>git tag v0.3.2 &amp;&amp; git push origin v0.3.2</code>；
+  <code>git tag v0.4.0 &amp;&amp; git push origin v0.4.0</code>；
 - 仓库 <code>Settings → Actions → General → Workflow permissions</code> 需要选
   <code>Read and write permissions</code>，否则创建 Release 会 403。
 
@@ -687,8 +709,8 @@ builtin/
 之后本地 Rust 服务的 <code>/api/*</code> 优先返回本地条目，<code>/icons/*</code> 直接读磁盘，
 本地没有的 <code>/api/*</code> 路径才回源上游。
 
-> 拉取期间**可以直接启动工具箱**：只要本地有工具箱静态产物，启动按钮保持可用，
-> 数据在后台继续拉取，完成后再写盘。
+> 拉取期间主按钮会变成红色的「停止更新」：点它立刻停止拉取，不会写入半截数据；
+> 想进工具箱就先停止，再点「启动工具箱」。
 
 ---
 
@@ -705,6 +727,10 @@ builtin/
   用户不用按 Ctrl+Shift+R；
 - 自动更新和手动更新互斥（同一个静态目录不能同时替换两次），重复触发会返回
   「工具箱正在更新中」。
+
+**自动检查 / 更新同样可以停止**：只要后端还在跑（`get_state.activity` 为真），
+启动页主按钮就显示红色的「停止更新」，点它把取消令牌 +1；清单读取、静态包下载、
+游戏数据拉取都会在下个检查点退出，进度行写「已停止更新」，不会留下半截数据。
 
 手动点「检查工具箱版本更新」时会读取工具箱仓库最新 Release 的 <code>manifest.json</code>：
 

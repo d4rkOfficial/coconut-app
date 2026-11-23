@@ -46,6 +46,9 @@ const DIST_ARCHIVE_MIRRORS: &[&str] = &["https://gh-proxy.com/", "https://ghfast
 /// 下载 / 读清单时「多久收不到数据」就放弃当前来源，转下一个镜像。
 const STREAM_IDLE_TIMEOUT: Duration = Duration::from_secs(30);
 const MIRROR_SWITCHED: &str = "__mirror_switched__";
+/// 用户点了「停止更新」：检查 / 更新用的所有长任务都返回这个标记，
+/// 前端据此显示「已停止更新」而不是「检查失败」。
+pub const CANCELLED: &str = "__cancelled__";
 /// 工具箱自带 PWA Service Worker，会预缓存 `/` 和 `_app` 资源。
 /// 启动器每次进工具箱都换一份「空壳 + 清预缓存」的 sw.js：
 /// 旧版本被缓存住、必须 Ctrl+Shift+R 才能看到新版本，就是它干的。
@@ -115,6 +118,10 @@ pub struct ServerState {
     pub workshop_target: RwLock<Option<String>>,
     /// 工具箱静态包是否正在下载 / 替换（自动更新与手动更新互斥）。
     pub updating: AtomicBool,
+    /// 取消令牌：用户每点一次「停止更新」就 +1，长任务比对开始时的值判断是否被停掉。
+    pub cancel_gen: AtomicUsize,
+    /// 正在进行的「检查更新 / 更新」任务数（工具箱 + 游戏数据），启动页据此把启动按钮切成停止。
+    pub activity: AtomicUsize,
     /// 插件管理器（内置 + 用户插件）。
     pub plugins: Plugins,
     /// console.* 的环形缓冲（内置调试终端轮询）。
@@ -128,6 +135,15 @@ pub struct ServerState {
     pub page_session: RwLock<Option<Arc<WsSession>>>,
     /// 上面这个开关的落盘位置（data_dir/settings.json）。
     pub settings_file: PathBuf,
+}
+
+/// 可停止长任务的计数守卫：`ServerState::activity_guard` 创建，离开作用域自动 -1。
+pub struct ActivityGuard<'a>(&'a AtomicUsize);
+
+impl Drop for ActivityGuard<'_> {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::SeqCst);
+    }
 }
 
 pub struct WsHub {
@@ -243,6 +259,26 @@ impl WsHub {
 }
 
 impl ServerState {
+    /// 标记「有一个可停止的检查 / 更新任务正在跑」；守卫析构时自动减一。
+    pub fn activity_guard(&self) -> ActivityGuard<'_> {
+        self.activity.fetch_add(1, Ordering::SeqCst);
+        ActivityGuard(&self.activity)
+    }
+
+    /// 开始一个长任务时记下取消令牌，之后用 `is_cancelled` 比对。
+    pub fn cancel_token(&self) -> usize {
+        self.cancel_gen.load(Ordering::SeqCst)
+    }
+
+    pub fn is_cancelled(&self, token: usize) -> bool {
+        self.cancel_gen.load(Ordering::SeqCst) != token
+    }
+
+    /// 用户点了「停止更新」：令牌 +1，所有在跑的长任务都会在下个检查点退出。
+    pub fn request_cancel(&self) {
+        self.cancel_gen.fetch_add(1, Ordering::SeqCst);
+    }
+
     pub async fn set_progress(&self, text: impl Into<String>) {
         *self.progress.write().await = text.into();
     }
@@ -439,6 +475,30 @@ fn rotated_sources(start: usize) -> Vec<(usize, String)> {
         .into_iter()
         .map(|(index, prefix)| (index, format!("{prefix}{DIST_ARCHIVE_URL}")))
         .collect()
+}
+
+/// 放在 `tokio::select!` 里等用户点「停止更新」：轮询令牌，不持有任何连接。
+/// 配合 select 使用时一旦用户点了停止，正在等待的网络请求会立刻被丢弃。
+async fn cancel_watch(state: &ServerState, token: usize) {
+    while !state.is_cancelled(token) {
+        tokio::time::sleep(Duration::from_millis(120)).await;
+    }
+}
+
+/// 用户停止更新：写一行「已停止更新」到进度行，并返回统一的取消错误。
+async fn stopped(state: &ServerState) -> String {
+    let lang = state.lang().await;
+    state
+        .set_progress(tr!(
+            lang,
+            "已停止更新",
+            "已停止更新",
+            "更新を停止しました",
+            "업데이트를 중지했습니다",
+            "Update stopped"
+        ))
+        .await;
+    CANCELLED.to_string()
 }
 
 /// 启动器自己的设置（data_dir/settings.json）。
@@ -1583,6 +1643,8 @@ impl PluginBridge for ServerBridge {
 }
 
 pub async fn check_game_update(state: &ServerState) -> Result<Value, String> {
+    let _activity = state.activity_guard();
+    let token = state.cancel_token();
     let lang = state.lang().await;
     state
         .set_progress(tr!(
@@ -1594,7 +1656,10 @@ pub async fn check_game_update(state: &ServerState) -> Result<Value, String> {
             "Checking the game data version…"
         ))
         .await;
-    let remote = fetch_remote_json(&state.client, "/api/v1/version/latest").await?;
+    let remote = tokio::select! {
+        result = fetch_remote_json(&state.client, "/api/v1/version/latest") => result?,
+        _ = cancel_watch(state, token) => return Err(stopped(state).await),
+    };
     let remote = remote.as_str().unwrap_or("").trim().to_string();
     if remote.is_empty() {
         return Err("上游没有返回游戏数据版本".into());
@@ -1686,6 +1751,7 @@ fn entity_paths(entries: &HashMap<String, Value>) -> Vec<String> {
 
 async fn fetch_game_lists(
     state: &Arc<ServerState>,
+    token: usize,
 ) -> Result<(String, HashMap<String, Value>), String> {
     let lang = state.lang().await;
     state
@@ -1698,7 +1764,10 @@ async fn fetch_game_lists(
             "Reading the game data version…"
         ))
         .await;
-    let version = fetch_remote_json(&state.client, "/api/v1/version/latest").await?;
+    let version = tokio::select! {
+        result = fetch_remote_json(&state.client, "/api/v1/version/latest") => result?,
+        _ = cancel_watch(state, token) => return Err(stopped(state).await),
+    };
     let version = version.as_str().unwrap_or("").trim().to_string();
     if version.is_empty() {
         return Err("上游没有返回游戏数据版本".into());
@@ -1718,9 +1787,15 @@ async fn fetch_game_lists(
         ))
         .await;
     for path in GAME_LIST_PATHS {
-        let mut value = fetch_remote_json(&state.client, path).await?;
+        if state.is_cancelled(token) {
+            return Err(stopped(state).await);
+        }
+        let mut value = tokio::select! {
+            result = fetch_remote_json(&state.client, path) => result?,
+            _ = cancel_watch(state, token) => return Err(stopped(state).await),
+        };
         if path.starts_with("/api/v1/batch-icons/") {
-            value = localize_icons(state, &value).await;
+            value = localize_icons(state, token, &value).await?;
         }
         entries.insert((*path).to_string(), value);
     }
@@ -1729,13 +1804,14 @@ async fn fetch_game_lists(
 
 async fn fetch_entity_paths(
     state: &Arc<ServerState>,
+    token: usize,
     paths: &[String],
     entries: &mut HashMap<String, Value>,
     label: &str,
-) {
+) -> Result<(), String> {
     let total = paths.len();
     if total == 0 {
-        return;
+        return Ok(());
     }
     state.set_progress(format!("{label} 0/{total}…")).await;
     let done = Arc::new(AtomicUsize::new(0));
@@ -1745,6 +1821,9 @@ async fn fetch_entity_paths(
         let done = done.clone();
         let label = label.to_string();
         async move {
+            if state.is_cancelled(token) {
+                return (path, Err(CANCELLED.to_string()));
+            }
             let result = fetch_remote_json(&client, &path).await;
             let current = done.fetch_add(1, Ordering::SeqCst) + 1;
             if current == total || current % 12 == 0 {
@@ -1759,11 +1838,15 @@ async fn fetch_entity_paths(
         .buffer_unordered(8)
         .collect::<Vec<_>>()
         .await;
+    if state.is_cancelled(token) {
+        return Err(stopped(state).await);
+    }
     for (key, result) in results {
         if let Ok(value) = result {
             entries.insert(key, value);
         }
     }
+    Ok(())
 }
 
 /// 图标本地化：下载 → 解码 → 重新编码成无损 webp 落盘，返回本地 URL。
@@ -1794,7 +1877,14 @@ fn transcode_webp(bytes: &[u8]) -> Result<Vec<u8>, String> {
     Ok(out)
 }
 
-async fn ensure_icon(state: &Arc<ServerState>, url: &str) -> Result<String, String> {
+async fn ensure_icon(
+    state: &Arc<ServerState>,
+    token: usize,
+    url: &str,
+) -> Result<String, String> {
+    if state.is_cancelled(token) {
+        return Err(CANCELLED.to_string());
+    }
     let name = format!("{}.webp", hash_url(url));
     let path = state.icons_dir.join(&name);
     let local = format!("http://127.0.0.1:{TOOLBOX_PORT}/icons/{name}");
@@ -1804,20 +1894,22 @@ async fn ensure_icon(state: &Arc<ServerState>, url: &str) -> Result<String, Stri
     {
         return Ok(local);
     }
-    let response = state
-        .client
-        .get(url)
-        .timeout(Duration::from_secs(30))
-        .send()
-        .await
-        .map_err(|error| format!("下载图标失败：{error}"))?;
+    let response = tokio::select! {
+        result = state.client.get(url).timeout(Duration::from_secs(30)).send() => {
+            result.map_err(|error| format!("下载图标失败：{error}"))?
+        }
+        _ = cancel_watch(state, token) => return Err(CANCELLED.to_string()),
+    };
     if !response.status().is_success() {
         return Err(format!("图标 HTTP {}", response.status()));
     }
-    let bytes = response
-        .bytes()
-        .await
-        .map_err(|error| format!("读取图标失败：{error}"))?;
+    let bytes = tokio::select! {
+        result = response.bytes() => result.map_err(|error| format!("读取图标失败：{error}"))?,
+        _ = cancel_watch(state, token) => return Err(CANCELLED.to_string()),
+    };
+    if state.is_cancelled(token) {
+        return Err(CANCELLED.to_string());
+    }
     let webp = transcode_webp(&bytes)?;
     std::fs::create_dir_all(&state.icons_dir)
         .map_err(|error| format!("创建图标目录失败：{error}"))?;
@@ -1827,9 +1919,13 @@ async fn ensure_icon(state: &Arc<ServerState>, url: &str) -> Result<String, Stri
     Ok(local)
 }
 
-async fn localize_icons(state: &Arc<ServerState>, value: &Value) -> Value {
+async fn localize_icons(
+    state: &Arc<ServerState>,
+    token: usize,
+    value: &Value,
+) -> Result<Value, String> {
     let Some(map) = value.as_object() else {
-        return value.clone();
+        return Ok(value.clone());
     };
     let pairs: Vec<(String, String)> = map
         .iter()
@@ -1837,7 +1933,10 @@ async fn localize_icons(state: &Arc<ServerState>, value: &Value) -> Value {
         .collect();
     let total = pairs.len();
     if total == 0 {
-        return value.clone();
+        return Ok(value.clone());
+    }
+    if state.is_cancelled(token) {
+        return Err(stopped(state).await);
     }
     let lang = state.lang().await;
     state
@@ -1858,14 +1957,15 @@ async fn localize_icons(state: &Arc<ServerState>, value: &Value) -> Value {
         let state = state.clone();
         let done = done.clone();
         async move {
-            let local = match ensure_icon(&state, &url).await {
-                Ok(path) => path,
+            let local = match ensure_icon(&state, token, &url).await {
+                Ok(path) => Some(path),
+                Err(error) if error == CANCELLED => return None,
                 Err(error) => {
                     state.log(
                         "icons",
                         &format!("图标本地化失败：{url}（{error}），保留远程地址"),
                     );
-                    url.clone()
+                    Some(url.clone())
                 }
             };
             let current = done.fetch_add(1, Ordering::SeqCst) + 1;
@@ -1874,18 +1974,21 @@ async fn localize_icons(state: &Arc<ServerState>, value: &Value) -> Value {
                     .set_progress(format!("正在缓存图标 {current}/{total}…"))
                     .await;
             }
-            (name, Value::String(local))
+            Some((name, Value::String(local.unwrap_or_else(|| url.clone()))))
         }
     });
     let results = futures_util::stream::iter(tasks)
         .buffer_unordered(6)
         .collect::<Vec<_>>()
         .await;
+    if state.is_cancelled(token) {
+        return Err(stopped(state).await);
+    }
     let mut out = serde_json::Map::new();
-    for (name, value) in results {
+    for (name, value) in results.into_iter().flatten() {
         out.insert(name, value);
     }
-    Value::Object(out)
+    Ok(Value::Object(out))
 }
 
 fn stamp_now() -> String {
@@ -1929,16 +2032,21 @@ async fn save_game_data(state: &Arc<ServerState>, data: &GameData) -> Result<(),
 }
 
 pub async fn update_game_data(state: &Arc<ServerState>) -> Result<Value, String> {
+    let _activity = state.activity_guard();
+    let token = state.cancel_token();
     state.crawling.store(true, Ordering::SeqCst);
-    let result = update_game_data_inner(state).await;
+    let result = update_game_data_inner(state, token).await;
     state.crawling.store(false, Ordering::SeqCst);
     result
 }
 
 /// 优先增量：版本没变就只补缺失实体；版本变了或缺缓存则全量。
-async fn update_game_data_inner(state: &Arc<ServerState>) -> Result<Value, String> {
+async fn update_game_data_inner(
+    state: &Arc<ServerState>,
+    token: usize,
+) -> Result<Value, String> {
     let lang = state.lang().await;
-    let (version, mut entries) = fetch_game_lists(state).await?;
+    let (version, mut entries) = fetch_game_lists(state, token).await?;
     let needed = entity_paths(&entries);
     let cache = state.game.read().await.clone();
 
@@ -2021,7 +2129,10 @@ async fn update_game_data_inner(state: &Arc<ServerState>) -> Result<Value, Strin
             "Fetching game data"
         )
     };
-    fetch_entity_paths(state, &jobs, &mut entries, label).await;
+    fetch_entity_paths(state, token, &jobs, &mut entries, label).await?;
+    if state.is_cancelled(token) {
+        return Err(stopped(state).await);
+    }
 
     let data = GameData {
         version: version.clone(),
@@ -2090,6 +2201,8 @@ async fn update_game_data_inner(state: &Arc<ServerState>) -> Result<Value, Strin
 }
 
 pub async fn check_toolbox_update(state: &Arc<ServerState>) -> Result<Value, String> {
+    let _activity = state.activity_guard();
+    let token = state.cancel_token();
     let lang = state.lang().await;
     state
         .set_progress(tr!(
@@ -2101,7 +2214,7 @@ pub async fn check_toolbox_update(state: &Arc<ServerState>) -> Result<Value, Str
             "Reading the Release manifest…"
         ))
         .await;
-    let bytes = fetch_manifest(state, false).await?;
+    let bytes = fetch_manifest(state, token, false).await?;
     let manifest: Value = serde_json::from_slice(&bytes)
         .map_err(|error| format!("GitHub manifest 不是 JSON：{error}"))?;
     let remote = manifest["commit"].as_str().unwrap_or("").to_string();
@@ -2147,15 +2260,25 @@ pub async fn check_toolbox_update(state: &Arc<ServerState>) -> Result<Value, Str
 
 /// 清单也走镜像：检查版本期间同样可以「切换镜像」。
 /// `quiet = true` 时不写启动页进度（启动时的自动更新不想在界面上刷一堆文字）。
-async fn fetch_manifest(state: &Arc<ServerState>, quiet: bool) -> Result<Bytes, String> {
+async fn fetch_manifest(
+    state: &Arc<ServerState>,
+    token: usize,
+    quiet: bool,
+) -> Result<Bytes, String> {
     let lang = state.lang().await;
     let mut failures: Vec<String> = Vec::new();
     let mut switches = 0usize;
 
     'rounds: loop {
+        if state.is_cancelled(token) {
+            return Err(stopped(state).await);
+        }
         let generation = state.mirror_gen.load(Ordering::SeqCst);
         let start = state.mirror_index.load(Ordering::SeqCst);
         for (index, prefix) in rotated_bases(start) {
+            if state.is_cancelled(token) {
+                return Err(stopped(state).await);
+            }
             let label = mirror_label(lang, index);
             let url = format!("{prefix}{DIST_MANIFEST_URL}");
             if !quiet {
@@ -2173,11 +2296,12 @@ async fn fetch_manifest(state: &Arc<ServerState>, quiet: bool) -> Result<Bytes, 
                     ))
                     .await;
             }
-            match read_manifest_source(state, &url, generation).await {
+            match read_manifest_source(state, &url, generation, token).await {
                 Ok(bytes) => {
                     state.log("update", &format!("{label} 读取清单成功"));
                     return Ok(bytes);
                 }
+                Err(error) if error == CANCELLED => return Err(error),
                 Err(error) if error == MIRROR_SWITCHED => {
                     switches += 1;
                     if switches > 8 {
@@ -2216,24 +2340,27 @@ async fn read_manifest_source(
     state: &Arc<ServerState>,
     url: &str,
     generation: usize,
+    token: usize,
 ) -> Result<Bytes, String> {
     if state.mirror_gen.load(Ordering::SeqCst) != generation {
         return Err(MIRROR_SWITCHED.into());
     }
-    let response = state
-        .client
-        .get(url)
-        .timeout(Duration::from_secs(20))
-        .send()
-        .await
-        .map_err(|error| format!("连接失败：{error}"))?;
+    let response = tokio::select! {
+        result = state.client.get(url).timeout(Duration::from_secs(20)).send() => {
+            result.map_err(|error| format!("连接失败：{error}"))?
+        }
+        _ = cancel_watch(state, token) => return Err(stopped(state).await),
+    };
     if !response.status().is_success() {
         return Err(format!("HTTP {}", response.status()));
     }
     let mut stream = response.bytes_stream();
     let mut data = Vec::new();
     loop {
-        let chunk = match tokio::time::timeout(STREAM_IDLE_TIMEOUT, stream.next()).await {
+        let chunk = match tokio::select! {
+            _ = cancel_watch(state, token) => return Err(stopped(state).await),
+            next = tokio::time::timeout(STREAM_IDLE_TIMEOUT, stream.next()) => next,
+        } {
             Ok(Some(chunk)) => chunk.map_err(|error| format!("传输中断：{error}"))?,
             Ok(None) => break,
             Err(_) => return Err("读取清单超时（30 秒没有收到数据）".into()),
@@ -2270,19 +2397,21 @@ async fn download_archive_source(
     label: &str,
     url: &str,
     generation: usize,
+    token: usize,
 ) -> Result<Bytes, String> {
     let lang = state.lang().await;
     if state.mirror_gen.load(Ordering::SeqCst) != generation {
         return Err(MIRROR_SWITCHED.into());
     }
-    let response = state
-        .client
-        .get(url)
-        .timeout(Duration::from_secs(180))
-        .header("accept", "application/octet-stream")
-        .send()
-        .await
-        .map_err(|error| format!("连接失败：{error}"))?;
+    let response = tokio::select! {
+        result = state
+            .client
+            .get(url)
+            .timeout(Duration::from_secs(180))
+            .header("accept", "application/octet-stream")
+            .send() => result.map_err(|error| format!("连接失败：{error}"))?,
+        _ = cancel_watch(state, token) => return Err(stopped(state).await),
+    };
     if !response.status().is_success() {
         return Err(format!("HTTP {}", response.status()));
     }
@@ -2294,7 +2423,10 @@ async fn download_archive_source(
     loop {
         // 只给「多久没收到数据」设上限：整体超时会让慢速但活着的下载被误杀，
         // 而没有上限时（直连 GitHub 资产经常挂在半路）会一直卡住，自动更新永远完不成。
-        let chunk = match tokio::time::timeout(STREAM_IDLE_TIMEOUT, stream.next()).await {
+        let chunk = match tokio::select! {
+            _ = cancel_watch(state, token) => return Err(stopped(state).await),
+            next = tokio::time::timeout(STREAM_IDLE_TIMEOUT, stream.next()) => next,
+        } {
             Ok(Some(chunk)) => chunk.map_err(|error| format!("传输中断：{error}"))?,
             Ok(None) => break,
             Err(_) => {
@@ -2337,16 +2469,25 @@ async fn download_archive_source(
     Ok(Bytes::from(data))
 }
 
-async fn download_toolbox_archive(state: &Arc<ServerState>) -> Result<Bytes, String> {
+async fn download_toolbox_archive(
+    state: &Arc<ServerState>,
+    token: usize,
+) -> Result<Bytes, String> {
     let lang = state.lang().await;
     let mut failures: Vec<String> = Vec::new();
     let mut switches = 0usize;
 
     'rounds: loop {
+        if state.is_cancelled(token) {
+            return Err(stopped(state).await);
+        }
         let generation = state.mirror_gen.load(Ordering::SeqCst);
         let start = state.mirror_index.load(Ordering::SeqCst);
         let sources = rotated_sources(start);
         for (step, (index, url)) in sources.iter().enumerate() {
+            if state.is_cancelled(token) {
+                return Err(stopped(state).await);
+            }
             let label = mirror_label(lang, *index);
             state
                 .set_progress(format!(
@@ -2362,7 +2503,7 @@ async fn download_toolbox_archive(state: &Arc<ServerState>) -> Result<Bytes, Str
                 ))
                 .await;
             state.log("update", &format!("尝试 {label} 下载：{url}"));
-            match download_archive_source(state, &label, url, generation).await {
+            match download_archive_source(state, &label, url, generation, token).await {
                 Ok(bytes) => {
                     state.log(
                         "update",
@@ -2370,6 +2511,7 @@ async fn download_toolbox_archive(state: &Arc<ServerState>) -> Result<Bytes, Str
                     );
                     return Ok(bytes);
                 }
+                Err(error) if error == CANCELLED => return Err(error),
                 Err(error) if error == MIRROR_SWITCHED => {
                     // 用户手动切换镜像：丢掉当前连接，用新镜像重来。
                     switches += 1;
@@ -2480,8 +2622,12 @@ pub fn extract_static_archive(bytes: &[u8], target: &std::path::Path) -> Result<
 ///
 /// 返回 `Ok(Some(commit))` = 真的更新到了这个 commit；`Ok(None)` = 已是最新；
 /// `Err(_)` = 网络 / 解压失败（静默跳过，启动页仍可手动更新）。
-pub async fn auto_update_toolbox(state: &Arc<ServerState>) -> Result<Option<String>, String> {
-    let bytes = fetch_manifest(state, true).await?;
+pub async fn auto_update_toolbox(
+    state: &Arc<ServerState>,
+    token: usize,
+) -> Result<Option<String>, String> {
+    let _activity = state.activity_guard();
+    let bytes = fetch_manifest(state, token, true).await?;
     let manifest: Value = serde_json::from_slice(&bytes)
         .map_err(|error| format!("GitHub manifest 不是 JSON：{error}"))?;
     let remote = manifest["commit"].as_str().unwrap_or("").to_string();
@@ -2510,7 +2656,7 @@ pub async fn auto_update_toolbox(state: &Arc<ServerState>) -> Result<Option<Stri
             )
         ))
         .await;
-    let result = update_toolbox(state).await?;
+    let result = update_toolbox_with_token(state, token).await?;
     let commit = result["commit"].as_str().unwrap_or(&remote).to_string();
     state.log(
         "update",
@@ -2520,6 +2666,15 @@ pub async fn auto_update_toolbox(state: &Arc<ServerState>) -> Result<Option<Stri
 }
 
 pub async fn update_toolbox(state: &Arc<ServerState>) -> Result<Value, String> {
+    let _activity = state.activity_guard();
+    let token = state.cancel_token();
+    update_toolbox_with_token(state, token).await
+}
+
+async fn update_toolbox_with_token(
+    state: &Arc<ServerState>,
+    token: usize,
+) -> Result<Value, String> {
     // 自动更新和手动「更新」互斥：同时替换同一个目录会把静态文件搅烂。
     if state
         .updating
@@ -2528,13 +2683,19 @@ pub async fn update_toolbox(state: &Arc<ServerState>) -> Result<Value, String> {
     {
         return Err("工具箱正在更新中，请稍候".into());
     }
-    let result = update_toolbox_inner(state).await;
+    let result = update_toolbox_inner(state, token).await;
     state.updating.store(false, Ordering::SeqCst);
     result
 }
 
-async fn update_toolbox_inner(state: &Arc<ServerState>) -> Result<Value, String> {
+async fn update_toolbox_inner(
+    state: &Arc<ServerState>,
+    token: usize,
+) -> Result<Value, String> {
     let lang = state.lang().await;
+    if state.is_cancelled(token) {
+        return Err(stopped(state).await);
+    }
     state
         .set_progress(tr!(
             lang,
@@ -2545,7 +2706,10 @@ async fn update_toolbox_inner(state: &Arc<ServerState>) -> Result<Value, String>
             "Fetching the toolbox update…"
         ))
         .await;
-    let bytes = download_toolbox_archive(state).await?;
+    let bytes = download_toolbox_archive(state, token).await?;
+    if state.is_cancelled(token) {
+        return Err(stopped(state).await);
+    }
     state
         .set_progress(tr!(
             lang,
@@ -2587,6 +2751,10 @@ async fn update_toolbox_inner(state: &Arc<ServerState>) -> Result<Value, String>
     let commit = manifest["commit"].as_str().unwrap_or("").to_string();
     let build = manifest["builtAt"].as_str().unwrap_or("").to_string();
 
+    if state.is_cancelled(token) {
+        let _ = std::fs::remove_dir_all(&temp);
+        return Err(stopped(state).await);
+    }
     state
         .set_progress(tr!(
             lang,
@@ -2692,6 +2860,8 @@ pub async fn start(static_dir: PathBuf, data_dir: PathBuf) -> Result<Arc<ServerS
         crawling: AtomicBool::new(false),
         workshop_target: RwLock::new(None),
         updating: AtomicBool::new(false),
+        cancel_gen: AtomicUsize::new(0),
+        activity: AtomicUsize::new(0),
         plugins,
         console: crate::console_bus::ConsoleBus::default(),
         lang: RwLock::new(language),
@@ -3019,6 +3189,8 @@ mod tests {
             crawling: AtomicBool::new(false),
             workshop_target: RwLock::new(None),
             updating: AtomicBool::new(false),
+            cancel_gen: AtomicUsize::new(0),
+            activity: AtomicUsize::new(0),
             plugins: Plugins::new(&root),
             console: crate::console_bus::ConsoleBus::default(),
             lang: RwLock::new(Lang::En),

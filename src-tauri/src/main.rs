@@ -11,9 +11,11 @@ mod server;
 use serde::Serialize;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::process::Command;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use tauri::webview::DownloadEvent;
 use tauri::{Manager, RunEvent, WindowEvent};
 
 use server::{ServerState, TOOLBOX_PORT, WS_PORT};
@@ -221,6 +223,8 @@ struct UiState {
     crawling: bool,
     /// 工具箱静态包是否正在自动 / 手动更新。
     updating: bool,
+    /// 是否有可停止的「检查更新 / 更新」任务在跑（工具箱 + 游戏数据）。
+    activity: bool,
     /// MSI 安装目录（存在 uninstall.exe 时非空）；便携版为空。
     uninstaller_dir: String,
 }
@@ -255,6 +259,61 @@ fn normalize_windows_path(path: PathBuf) -> PathBuf {
         return PathBuf::from(rest.to_string());
     }
     path
+}
+
+/// 多个文件同时下载时只弹一次下载目录（1.2 秒内的重复事件直接忽略）。
+static LAST_DOWNLOAD_OPEN: AtomicU64 = AtomicU64::new(0);
+
+/// 系统下载目录：Windows / macOS / Linux 都由 Tauri 的路径解析给（XDG / Known Folder）。
+fn system_downloads_dir(app: &tauri::AppHandle) -> Option<PathBuf> {
+    let resolver = app.path();
+    resolver
+        .download_dir()
+        .ok()
+        .or_else(|| resolver.home_dir().ok().map(|home| home.join("Downloads")))
+}
+
+/// 用系统资源管理器打开一个目录（三平台各用各的命令）。
+fn open_directory(dir: &Path) -> std::io::Result<()> {
+    #[cfg(target_os = "windows")]
+    let program = "explorer.exe";
+    #[cfg(target_os = "macos")]
+    let program = "open";
+    #[cfg(all(unix, not(target_os = "macos")))]
+    let program = "xdg-open";
+    #[cfg(not(any(target_os = "windows", unix)))]
+    let program = "xdg-open";
+    Command::new(program).arg(dir).spawn().map(|_| ())
+}
+
+/// 工具箱页面有下载行为（例如导出工程）时，直接弹出系统下载目录。
+fn reveal_downloads(app: &tauri::AppHandle) {
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64;
+    let last = LAST_DOWNLOAD_OPEN.load(Ordering::SeqCst);
+    if now.saturating_sub(last) < 1200 {
+        return;
+    }
+    LAST_DOWNLOAD_OPEN.store(now, Ordering::SeqCst);
+    let Some(dir) = system_downloads_dir(app) else {
+        return;
+    };
+    let _ = fs::create_dir_all(&dir);
+    let state = server_state(app);
+    match open_directory(&dir) {
+        Ok(()) => {
+            if let Some(state) = &state {
+                state.log("download", &format!("检测到下载，打开下载目录：{}", dir.display()));
+            }
+        }
+        Err(error) => {
+            if let Some(state) = &state {
+                state.log("download", &format!("打开下载目录失败：{error}"));
+            }
+        }
+    }
 }
 
 #[tauri::command]
@@ -295,6 +354,7 @@ async fn get_state(app: tauri::AppHandle) -> Result<UiState, String> {
         has_static: state.static_dir.join("index.html").is_file(),
         crawling: state.crawling.load(Ordering::SeqCst),
         updating: state.updating.load(Ordering::SeqCst),
+        activity: state.activity.load(Ordering::SeqCst) > 0,
         uninstaller_dir: uninstaller_dir()
             .map(|dir| dir.display().to_string())
             .unwrap_or_default(),
@@ -305,9 +365,13 @@ async fn get_state(app: tauri::AppHandle) -> Result<UiState, String> {
 async fn check_update(app: tauri::AppHandle) -> Result<serde_json::Value, String> {
     let state = server_state(&app).ok_or_else(|| "本地服务尚未启动".to_string())?;
     let result = server::check_toolbox_update(&state).await;
-    if let Err(error) = &result {
-        state.log("update", &format!("检查工具箱更新失败：{error}"));
-        state.set_progress(format!("检查失败：{error}")).await;
+    match &result {
+        Err(error) if error == server::CANCELLED => state.log("update", "用户停止了工具箱更新检查"),
+        Err(error) => {
+            state.log("update", &format!("检查工具箱更新失败：{error}"));
+            state.set_progress(format!("检查失败：{error}")).await;
+        }
+        Ok(_) => {}
     }
     result
 }
@@ -318,12 +382,30 @@ async fn update_toolbox(app: tauri::AppHandle) -> Result<serde_json::Value, Stri
     let result = server::update_toolbox(&state).await;
     match &result {
         Ok(_) => reload_toolbox_page(&app),
+        Err(error) if error == server::CANCELLED => state.log("update", "用户停止了工具箱更新"),
         Err(error) => {
             state.log("update", &format!("工具箱更新失败：{error}"));
             state.set_progress(format!("更新失败：{error}")).await;
         }
     }
     result
+}
+
+/// 停止按钮：更新 / 检查更新都可以被用户随时停掉。
+#[tauri::command]
+fn cancel_update(app: tauri::AppHandle) -> Result<serde_json::Value, String> {
+    let state = server_state(&app).ok_or_else(|| "本地服务尚未启动".to_string())?;
+    let active = state.activity.load(Ordering::SeqCst) > 0;
+    state.request_cancel();
+    state.log(
+        "update",
+        if active {
+            "用户点击「停止更新」"
+        } else {
+            "收到「停止更新」，但当前没有正在跑的任务"
+        },
+    );
+    Ok(serde_json::json!({ "active": active }))
 }
 
 /// 静态包换完之后，如果工具箱页面已经打开，直接让它重新加载：
@@ -549,9 +631,13 @@ async fn switch_mirror(app: tauri::AppHandle) -> Result<serde_json::Value, Strin
 async fn check_game_update(app: tauri::AppHandle) -> Result<serde_json::Value, String> {
     let state = server_state(&app).ok_or_else(|| "本地服务尚未启动".to_string())?;
     let result = server::check_game_update(&state).await;
-    if let Err(error) = &result {
-        state.log("game", &format!("检查游戏数据版本失败：{error}"));
-        state.set_progress(format!("检查失败：{error}")).await;
+    match &result {
+        Err(error) if error == server::CANCELLED => state.log("game", "用户停止了游戏数据检查"),
+        Err(error) => {
+            state.log("game", &format!("检查游戏数据版本失败：{error}"));
+            state.set_progress(format!("检查失败：{error}")).await;
+        }
+        Ok(_) => {}
     }
     result
 }
@@ -560,9 +646,13 @@ async fn check_game_update(app: tauri::AppHandle) -> Result<serde_json::Value, S
 async fn update_game_data(app: tauri::AppHandle) -> Result<serde_json::Value, String> {
     let state = server_state(&app).ok_or_else(|| "本地服务尚未启动".to_string())?;
     let result = server::update_game_data(&state).await;
-    if let Err(error) = &result {
-        state.log("game", &format!("游戏数据更新失败：{error}"));
-        state.set_progress(format!("更新失败：{error}")).await;
+    match &result {
+        Err(error) if error == server::CANCELLED => state.log("game", "用户停止了游戏数据更新"),
+        Err(error) => {
+            state.log("game", &format!("游戏数据更新失败：{error}"));
+            state.set_progress(format!("更新失败：{error}")).await;
+        }
+        Ok(_) => {}
     }
     result
 }
@@ -1030,6 +1120,7 @@ fn main() {
             get_state,
             check_update,
             update_toolbox,
+            cancel_update,
             check_game_update,
             update_game_data,
             set_language,
@@ -1055,6 +1146,33 @@ fn main() {
             open_data_dir
         ])
         .setup(|app| {
+            // 主窗口改成在 Rust 里创建（tauri.conf.json 里 create=false），
+            // 这样才能挂上 on_download：工具箱页面导出工程等下载行为会立刻弹出系统下载目录。
+            let main_config = app
+                .config()
+                .app
+                .windows
+                .iter()
+                .find(|window| window.label == "main")
+                .cloned();
+            if let Some(config) = main_config {
+                let download_handle = app.handle().clone();
+                tauri::webview::WebviewWindowBuilder::from_config(app.handle(), &config)?
+                    .on_download(move |_webview, event| {
+                        // 注意：下载事件在 UI 线程同步回调，这里不能调用任何会
+                        // dispatch 回主线程的 webview API（会死锁），只查启动器自己的状态。
+                        if let DownloadEvent::Requested { .. } = event {
+                            let launched =
+                                download_handle.state::<Launched>().0.load(Ordering::SeqCst);
+                            if launched {
+                                reveal_downloads(&download_handle);
+                            }
+                        }
+                        true
+                    })
+                    .build()?;
+            }
+
             let data_dir = app
                 .path()
                 .app_data_dir()
@@ -1133,14 +1251,24 @@ fn main() {
             if let Some(state) = server_state {
                 let auto_state = state.clone();
                 let auto_handle = app.handle().clone();
+                // 在排进队列时就记下取消令牌：用户在 1.5 秒等待期里点了「停止更新」，
+                // 这次自动更新直接不开始，不会再跳出来「进入下一个更新」。
+                let auto_token = auto_state.cancel_token();
                 tauri::async_runtime::spawn(async move {
                     tokio::time::sleep(Duration::from_millis(1500)).await;
-                    match server::auto_update_toolbox(&auto_state).await {
+                    if auto_state.is_cancelled(auto_token) {
+                        auto_state.log("update", "启动时自动更新已被用户停止（未开始）");
+                        return;
+                    }
+                    match server::auto_update_toolbox(&auto_state, auto_token).await {
                         Ok(Some(commit)) => {
                             eprintln!("[auto-update] 工具箱已自动更新到 {commit}");
                             reload_toolbox_page(&auto_handle);
                         }
                         Ok(None) => {}
+                        Err(error) if error == server::CANCELLED => {
+                            auto_state.log("update", "启动时自动更新已被用户停止");
+                        }
                         Err(error) => {
                             auto_state.log("update", &format!("启动时自动更新跳过：{error}"));
                             eprintln!("[auto-update] 已跳过：{error}");

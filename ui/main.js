@@ -20,6 +20,15 @@ let exitTicker = 0;
 let exitDeadline = 0;
 let hasStatic = true;
 let refreshing = false;
+/** 前端发起的检查 / 更新：'check-toolbox' | 'update-toolbox' | 'check-game' | 'update-game'。 */
+let activeTask = null;
+/** 后端在跑自动检查 / 更新（例如启动 1.5 秒后的自动更新），由 get_state 轮询得知。 */
+let backendActivity = false;
+/** 用户刚点过停止：忽略后端残留的 activity，避免按钮又红回去。 */
+let suppressActivity = false;
+let starting = false;
+/** 用户按过停止：启动时的自动检查是「工具箱 + 游戏数据」连跑，停一次就整串都停。 */
+let autoSeriesStopped = false;
 
 const darkQuery = window.matchMedia('(prefers-color-scheme: dark)');
 let currentTheme = darkQuery.matches ? 'dark' : 'light';
@@ -216,15 +225,33 @@ function scheduleReset(id, text) {
   );
 }
 
+function isStopping() {
+  return Boolean(activeTask) || backendActivity;
+}
+
+/** 启动按钮：空闲时是「启动工具箱」，检查 / 更新期间变成红色的「停止更新」。 */
+function syncStartButton() {
+  const button = $('start');
+  if (!button) return;
+  const stopping = isStopping();
+  let label = t('start');
+  if (starting) label = t('start.busy');
+  else if (stopping) label = t('start.stop');
+  $('start-label').textContent = label;
+  button.classList.toggle('stopping', stopping && !starting);
+  button.dataset.mode = stopping ? 'stop' : 'start';
+  button.title = stopping ? t('start.stopTitle') : '';
+  button.disabled = !connected || starting || (!hasStatic && !stopping);
+}
+
 function disableActions(disabled) {
-  // 游戏数据在后台拉取时，只要本地有工具箱静态产物，就允许先启动工具箱。
-  // 工具箱静态包自动更新期间也允许启动：更新完会自动刷新页面，不挡用户。
-  const canStart = connected && hasStatic && (!disabled || refreshing);
-  $('start').disabled = !canStart;
+  // 检查 / 更新 / 自动更新期间，「启动工具箱」变成「停止更新」而不是禁用：
+  // 点它就把当前的检查或更新停下来。游戏数据在后台拉取时也是同样处理。
   $('check-toolbox').disabled = disabled || !connected;
   $('check-game').disabled = disabled || !connected;
   $('uninstall').disabled = disabled;
   $('plugins').disabled = !connected;
+  syncStartButton();
 }
 
 // ── 插件管理 ──
@@ -778,6 +805,10 @@ function applyState(next) {
   if (typeof next.has_static === 'boolean') {
     hasStatic = next.has_static;
   }
+  // 后端自动检查 / 更新（启动 1.5 秒后那次）也把启动按钮切成「停止更新」。
+  // 用户点过停止后先压住残留的 activity，等它真的归零再恢复正常轮询。
+  if (suppressActivity && !next.activity) suppressActivity = false;
+  backendActivity = Boolean(next.activity) && !suppressActivity;
   if (next.progress && !mirrorHold) {
     setProgress(next.progress, progressKind(next.progress), {
       mirror: connected && updatingToolbox,
@@ -791,7 +822,7 @@ function applyState(next) {
     return;
   }
 
-  if (!busy && Date.now() >= statusHoldUntil && !next.updating) {
+  if (!busy && Date.now() >= statusHoldUntil && !backendActivity) {
     setPhase('READY');
     if (hasStatic) {
       setStatus(t('status.ready'), 'ready');
@@ -799,9 +830,12 @@ function applyState(next) {
       setStatus(t('status.missingStatic'), 'error');
     }
   }
-  if (next.updating && !busy) {
-    setPhase('UPDATE');
-    setStatus(t('status.autoUpdating'), 'busy');
+  if (backendActivity && !busy) {
+    setPhase(next.updating ? 'UPDATE' : 'CHECK');
+    setStatus(
+      next.updating ? t('status.autoUpdating') : t('status.autoChecking'),
+      'busy',
+    );
   }
   disableActions(busy);
 }
@@ -833,9 +867,11 @@ async function runCheck(kind) {
     return;
   }
 
-  busy = true;
-  disableActions(true);
   const isToolbox = kind === 'toolbox';
+  busy = true;
+  activeTask = isToolbox ? 'check-toolbox' : 'check-game';
+  suppressActivity = false;
+  disableActions(true);
   const button = isToolbox ? 'check-toolbox' : 'check-game';
   const label = isToolbox ? t('check.toolbox') : t('check.game');
   statusHoldUntil = 0;
@@ -885,14 +921,23 @@ async function runCheck(kind) {
   } catch (error) {
     if (isToolbox) toolboxUpdate = null;
     else gameUpdate = null;
-    const detail = error?.message || String(error) || '';
-    setButtonLabel(button, t('check.failed'));
-    setStatus(detail || t('check.failed'), 'error', true);
-    setProgress(t('progress.checkFailed', { detail }), 'error');
-    setPhase('READY');
-    scheduleReset(button, label);
+    if (isCancelledError(error)) {
+      setButtonLabel(button, label);
+      setStatus(t('update.stopped'), 'ready', true);
+      statusHoldUntil = Date.now() + RESULT_HOLD_MS;
+      setProgress(t('progress.stopped'), 'done');
+      setPhase('READY');
+    } else {
+      const detail = error?.message || String(error) || '';
+      setButtonLabel(button, t('check.failed'));
+      setStatus(detail || t('check.failed'), 'error', true);
+      setProgress(t('progress.checkFailed', { detail }), 'error');
+      setPhase('READY');
+      scheduleReset(button, label);
+    }
   } finally {
     updatingToolbox = false;
+    activeTask = null;
     busy = false;
     disableActions(false);
     $(button).classList.remove('neon-busy');
@@ -902,9 +947,11 @@ async function runCheck(kind) {
 async function runUpdate(kind) {
   if (busy || !connected) return;
   const isToolbox = kind === 'toolbox';
-  // 拉取游戏数据是后台任务：允许同时启动工具箱。
+  // 拉取游戏数据是可以随时停止的后台任务；停止后仍可立刻启动工具箱。
   refreshing = !isToolbox;
   busy = true;
+  activeTask = isToolbox ? 'update-toolbox' : 'update-game';
+  suppressActivity = false;
   disableActions(true);
   const button = isToolbox ? 'check-toolbox' : 'check-game';
   const label = isToolbox ? t('check.toolbox') : t('check.game');
@@ -942,19 +989,61 @@ async function runUpdate(kind) {
   } catch (error) {
     if (isToolbox) toolboxUpdate = null;
     else gameUpdate = null;
-    const detail = error?.message || String(error) || '';
-    setButtonLabel(button, t('check.failed'));
-    setStatus(detail || t('check.failed'), 'error', true);
-    setProgress(t('progress.updateFailed', { detail }), 'error');
-    setPhase('READY');
-    scheduleReset(button, label);
+    if (isCancelledError(error)) {
+      setButtonLabel(button, label);
+      setStatus(t('update.stopped'), 'ready', true);
+      statusHoldUntil = Date.now() + RESULT_HOLD_MS;
+      setProgress(t('progress.stopped'), 'done');
+      setPhase('READY');
+    } else {
+      const detail = error?.message || String(error) || '';
+      setButtonLabel(button, t('check.failed'));
+      setStatus(detail || t('check.failed'), 'error', true);
+      setProgress(t('progress.updateFailed', { detail }), 'error');
+      setPhase('READY');
+      scheduleReset(button, label);
+    }
   } finally {
     updatingToolbox = false;
     refreshing = false;
+    activeTask = null;
     busy = false;
     disableActions(false);
     $(button).classList.remove('neon-busy');
   }
+}
+
+/** 后端用 `__cancelled__` 表示用户点了「停止更新」，不算失败。 */
+function isCancelledError(error) {
+  return (error?.message || String(error || '')) === '__cancelled__';
+}
+
+/** 启动按钮在检查 / 更新期间就是停止按钮：点它立刻全停，并马上恢复「启动工具箱」。 */
+function stopUpdates() {
+  // 一次性全停：当前前端任务、后端自动（检查 / 更新）、后续自动检查与更新全部放弃。
+  // 不显示「正在停止」过渡态，也不等后端确认——按钮立即回到「启动工具箱」。
+  autoSeriesStopped = true;
+  suppressActivity = true;
+  activeTask = null;
+  backendActivity = false;
+  busy = false;
+  refreshing = false;
+  starting = false;
+  statusHoldUntil = Date.now() + RESULT_HOLD_MS;
+  disableActions(false);
+  setStatus(t('update.stopped'), 'ready', true);
+  setProgress(t('progress.stopped'), 'done');
+  setPhase('READY');
+  // 后端收到令牌后会丢弃正在进行的连接 / 下载；即使晚一点收尾，界面也不再回到停止态。
+  invoke('cancel_update').catch(() => {});
+}
+
+async function onStartClick() {
+  if (isStopping()) {
+    stopUpdates();
+    return;
+  }
+  await startFlow();
 }
 
 async function startFlow() {
@@ -962,20 +1051,20 @@ async function startFlow() {
     setStatus(t('status.missingStaticStart'), 'error', true);
     return;
   }
-  // 游戏数据在后台拉取时也可以进工具箱。
-  if ((busy && !refreshing) || !connected || !state?.url) return;
+  // 检查 / 更新期间按钮是「停止更新」，走到这里的只会是空闲状态。
+  if (busy || isStopping() || !connected || !state?.url) return;
+  starting = true;
   busy = true;
   disableActions(true);
-  $('start-label').textContent = t('start.busy');
   setPhase('START');
   setStatus(t('status.entering'), 'busy');
   setProgress(t('progress.openingToolbox'), 'busy');
   try {
     await invoke('open_toolbox_window', { url: state.url });
   } catch (error) {
+    starting = false;
     busy = false;
     disableActions(false);
-    $('start-label').textContent = t('start');
     setPhase('READY');
     const detail = error?.message || String(error) || '';
     setStatus(t('start.failed', { detail }), 'error', true);
@@ -1515,10 +1604,13 @@ function initCursorDots() {
 // 进入启动页时自动检查一次更新：工具箱与游戏数据串行执行，避免 busy 锁冲突。// 只做「检查」，不自动下载更新——发现新版本仍由用户点按钮触发更新。
 async function autoCheckOnEnter() {
   if (!connected || busy) return;
+  autoSeriesStopped = false;
   await runCheck('toolbox');
+  // 用户点了「停止更新」就把后面那次游戏数据检查也一起停掉。
+  if (autoSeriesStopped) return;
   // runCheck 结束会释放 busy；等一拍再查游戏数据，避免同一 tick 抢占。
   await new Promise((resolve) => setTimeout(resolve, 350));
-  if (!connected || busy) return;
+  if (autoSeriesStopped || !connected || busy) return;
   await runCheck('game');
 }
 
@@ -1533,7 +1625,7 @@ async function init() {
   if (darkQuery.addEventListener) darkQuery.addEventListener('change', onSystemTheme);
   else if (darkQuery.addListener) darkQuery.addListener(onSystemTheme);
 
-  $('start').addEventListener('click', startFlow);
+  $('start').addEventListener('click', onStartClick);
   $('check-toolbox').addEventListener('click', () => runCheck('toolbox'));
   $('check-game').addEventListener('click', () => runCheck('game'));
   // 启动页语言跟随系统；顺手告诉 Rust，进度文案用同一种语言。
@@ -1608,7 +1700,8 @@ async function init() {
 
   const poll = async () => {
     await refresh();
-    setTimeout(poll, busy ? 600 : 1500);
+    // 有任务在跑时加快轮询：停止按钮 / 自动更新的状态要尽快反映到界面上。
+    setTimeout(poll, busy || backendActivity ? 600 : 1500);
   };
   setTimeout(poll, 1500);
 }

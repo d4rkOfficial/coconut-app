@@ -1737,6 +1737,20 @@ button.primary:hover svg {
   transform: translateX(3px);
 }
 
+/* 检查更新 / 更新期间，主按钮直接变成红色的「停止更新」。
+   布局跟「启动工具箱」完全一致：文字在左、箭头图标在右。 */
+button.primary.stopping {
+  background: linear-gradient(180deg, #e2564f, #cf3b3b);
+  color: #fff;
+  box-shadow: 0 16px 34px rgba(207, 59, 59, 0.32);
+}
+
+button.primary.stopping:hover {
+  transform: translateY(-2px);
+  filter: brightness(1.08);
+  box-shadow: 0 22px 44px rgba(207, 59, 59, 0.4);
+}
+
 button.secondary {
   min-width: 152px;
   height: 58px;
